@@ -2,7 +2,7 @@
   "name": "ppc-backend",
   "version": "0.1.0",
   "description": "PPC Enterprise System backend — Modules 1-4 (Master Data, Orders, Daily Production Input, OEE Monitoring)",
-  "main": "dist/server.js",
+  "main": "dist/src/server.js",
   "type": "commonjs",
   "engines": {
     "node": ">=18"
@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "prisma generate && tsc -p tsconfig.json",
-    "start": "node dist/server.js",
+    "start": "node dist/src/server.js",
     "postinstall": "prisma generate",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
