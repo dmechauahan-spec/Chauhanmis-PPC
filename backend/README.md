@@ -1762,6 +1762,15 @@ build time.
 The build command itself (`"build": "prisma generate && tsc -p tsconfig.json"` in `package.json`)
 only runs `prisma generate` — regenerating the Prisma Client from `schema.prisma` so the generated
 client exists at build time, which a serverless deploy requires. It does not touch the database.
+`package.json` also runs `prisma generate` from a `postinstall` script, so it's guaranteed to run
+after every `npm install` even if Vercel's dependency caching skips re-running `build`.
+
+`schema.prisma`'s `generator client` block also pins `binaryTargets = ["native",
+"rhel-openssl-3.0.x"]` — `"rhel-openssl-3.0.x"` is the query-engine binary Vercel's Node.js
+serverless runtime needs, which Prisma doesn't always auto-detect correctly during a Vercel build;
+without it, a deploy can fail at runtime with `PrismaClientInitializationError` even though
+`prisma generate` succeeded during the build. `"native"` is kept alongside it so local dev/test
+still works on whatever platform you run `prisma generate` on.
 
 ### Required Vercel environment variables
 
