@@ -1,0 +1,2699 @@
+openapi: 3.0.3
+info:
+  title: PPC Enterprise Backend API
+  version: 0.1.0
+  description: >
+    Module 1 (Master Data), Module 2 (Orders), Module 3 (Daily Production
+    Input), Module 4 (OEE Monitoring), Module 5 (BOM Explosion Engine),
+    Module 6 (CTB — Clear To Build Engine), Module 7 (Material Dashboard),
+    Module 8 (Order-Wise Shortage Analysis), Module 9 (Purchase
+    Requisition Automation), Module 10 (Smart Scheduling Engine),
+    Module 11 (Risk Prediction Engine), Module 12 (PPC Spotlight
+    Search), Module 13 (QC Planning Integration), and Module 14
+    (Dashboard & Analytics) of the PPC Enterprise system for Chauhan
+    MIS Automation Solutions — all 14 modules of the original spec.
+    All responses use the standard envelope `{ success, data }` or
+    `{ success, error }`.
+
+
+    **Authentication.** Every route below except `POST /auth/login`
+    requires a `Bearer <token>` obtained from `POST /auth/login` (8-hour
+    expiry, no refresh token). Every route additionally requires one of
+    `Admin` / `StoreManager` / `ProductionManager` — `Admin` always
+    passes; the per-module read/write role requirement is documented in
+    README.md's "Authentication & Authorization" permission matrix,
+    since arbitrary custom role names aren't natively expressible as
+    OpenAPI security scopes. A missing/invalid token returns `401`; a
+    valid token for the wrong role returns `403`.
+servers:
+  - url: http://localhost:3000/api
+    description: Local development
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Auth
+  - name: Products
+  - name: Lines
+  - name: HR Teams
+  - name: BOM
+  - name: RM Inventory
+  - name: Orders
+  - name: Daily Logs
+  - name: OEE
+  - name: BOM Explosion
+  - name: CTB
+  - name: Materials
+  - name: Shortage Report
+  - name: Purchase Requisitions
+  - name: Scheduling
+  - name: Risk
+  - name: Search
+  - name: QC
+  - name: Testing Plans
+  - name: Dashboard
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    pageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+
+  schemas:
+    ApiError:
+      type: object
+      properties:
+        success: { type: boolean, example: false }
+        error:
+          type: object
+          properties:
+            message: { type: string }
+            details: {}
+
+    User:
+      type: object
+      properties:
+        id: { type: integer, example: 1 }
+        email: { type: string, format: email }
+        name: { type: string }
+        role: { type: string, enum: [Admin, StoreManager, ProductionManager] }
+        isActive: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    Product:
+      type: object
+      properties:
+        modelId: { type: string, example: MDL-8001 }
+        modelName: { type: string, example: SP10B2 }
+        productType: { type: string, example: OTG }
+        sku: { type: string, example: SP10B2 }
+        taktTimeSec: { type: number }
+        manpowerRequired: { type: integer }
+        noOfStations: { type: integer }
+        changeoverTimeMin: { type: number, nullable: true }
+        notes: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ProductionLine:
+      type: object
+      properties:
+        lineId: { type: string, example: L1 }
+        lineName: { type: string }
+        maxWorkers: { type: integer }
+        efficiencyPct: { type: number }
+        status: { type: string, enum: [Active, Offline] }
+        notes: { type: string, nullable: true }
+        capPerDay: { type: number, nullable: true }
+        productTypes:
+          type: array
+          items: { type: string }
+
+    HrTeam:
+      type: object
+      properties:
+        teamId: { type: string, example: HR1 }
+        teamName: { type: string }
+        lineId: { type: string, nullable: true }
+        workers: { type: integer }
+        skill: { type: string, nullable: true }
+        attendancePct: { type: number, nullable: true }
+        shift: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
+
+    BomComponent:
+      type: object
+      properties:
+        id: { type: integer }
+        modelRef: { type: string, example: SP10B2 }
+        uom: { type: string, enum: [Pcs, Set, Kg, Ltr, Mtr] }
+        partName: { type: string }
+        qtyPerUnit: { type: number }
+        partId: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    RmInventory:
+      type: object
+      properties:
+        partId: { type: string }
+        stock: { type: number }
+        updatedAt: { type: string, format: date-time }
+
+    RmTransaction:
+      type: object
+      properties:
+        id: { type: integer }
+        partId: { type: string }
+        delta: { type: number }
+        reason: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    Order:
+      type: object
+      properties:
+        orderId: { type: string, example: SO-1014 }
+        client: { type: string }
+        sku: { type: string }
+        product: { type: string }
+        qty: { type: integer }
+        dueDate: { type: string, format: date, nullable: true }
+        priority: { type: string, enum: [Low, Medium, High] }
+        status:
+          type: string
+          enum: [Open, PendingRM, Scheduled, Running, QC, DispatchReady, Closed]
+        createdAt: { type: string, format: date-time }
+
+    OrderStatusHistory:
+      type: object
+      properties:
+        id: { type: integer }
+        orderId: { type: string }
+        oldStatus: { type: string, nullable: true }
+        newStatus: { type: string }
+        changedBy: { type: string, nullable: true }
+        changedAt: { type: string, format: date-time }
+
+    DowntimeEntry:
+      type: object
+      properties:
+        id: { type: integer }
+        logId: { type: string }
+        reason:
+          type: string
+          enum:
+            [
+              Material Not Available,
+              Machine Breakdown,
+              Changeover Activity,
+              Operator Unavailable,
+              Power Failure,
+              Other,
+            ]
+        minutes: { type: number }
+        notes: { type: string, nullable: true }
+      required: [reason, minutes]
+
+    DailyProductionLog:
+      type: object
+      properties:
+        logId: { type: string, example: DL-20260718-01, readOnly: true }
+        logDate: { type: string, format: date }
+        shift: { type: string, nullable: true }
+        lineId: { type: string, nullable: true }
+        lineName: { type: string, nullable: true }
+        activeLinesCount: { type: integer, nullable: true }
+        modelId: { type: string, nullable: true }
+        modelName: { type: string, nullable: true }
+        totalEmployees: { type: integer, nullable: true }
+        presentEmployees: { type: integer, nullable: true }
+        absentEmployees: { type: integer, nullable: true, readOnly: true }
+        attendancePct: { type: number, nullable: true, readOnly: true }
+        taktTimeOverride: { type: number, nullable: true }
+        manpowerOverride: { type: integer, nullable: true }
+        notes: { type: string, nullable: true }
+        stationAssignments:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: array
+            items: { type: string }
+          example: { Element: [ajit, suresh], Pully: [karan, arjun] }
+        savedBy: { type: string }
+        savedAt: { type: string, format: date-time }
+        plannedMinutes:
+          type: number
+          nullable: true
+          description: >
+            Shift's planned production minutes. Defaults from the shift lookup (see README) when
+            omitted and not already set.
+        totalOutputQty: { type: number, nullable: true, description: Total units produced during the shift. }
+        goodQty:
+          type: number
+          nullable: true
+          description: Units that passed quality. Must be <= totalOutputQty.
+        downtimeEntries:
+          type: array
+          items: { $ref: '#/components/schemas/DowntimeEntry' }
+
+    OeeResult:
+      type: object
+      description: OEE breakdown for a single daily_production_log row.
+      properties:
+        logId: { type: string }
+        logDate: { type: string, format: date }
+        shift: { type: string, nullable: true }
+        lineId: { type: string, nullable: true }
+        lineName: { type: string, nullable: true }
+        modelId: { type: string, nullable: true }
+        modelName: { type: string, nullable: true }
+        plannedMinutes: { type: number, nullable: true }
+        totalOutputQty: { type: number, nullable: true }
+        goodQty: { type: number, nullable: true }
+        downtimeMinutes: { type: number }
+        runTimeMinutes: { type: number, nullable: true }
+        availabilityPct: { type: number, nullable: true }
+        standardOutput: { type: number, nullable: true }
+        performancePct: { type: number, nullable: true }
+        qualityPct: { type: number, nullable: true }
+        oeePct: { type: number, nullable: true }
+        notes:
+          type: array
+          items: { type: string }
+          description: Human-readable reasons for any null value above.
+
+    OeeAggregateResult:
+      type: object
+      description: >
+        Aggregated OEE across a set of logs, computed from summed numerators/denominators
+        (not an average of each log's oeePct) — see README "Aggregation".
+      properties:
+        logCount: { type: integer }
+        totals:
+          type: object
+          properties:
+            availability:
+              type: object
+              properties:
+                plannedMinutes: { type: number }
+                downtimeMinutes: { type: number }
+                runTimeMinutes: { type: number }
+            performance:
+              type: object
+              properties:
+                totalOutputQty: { type: number }
+                standardOutput: { type: number }
+            quality:
+              type: object
+              properties:
+                goodQty: { type: number }
+                totalOutputQty: { type: number }
+        availabilityPct: { type: number, nullable: true }
+        performancePct: { type: number, nullable: true }
+        qualityPct: { type: number, nullable: true }
+        oeePct: { type: number, nullable: true }
+        excludedLogsCount:
+          type: object
+          description: Number of logs excluded from each component's sums for lacking that component's data.
+          properties:
+            availability: { type: integer }
+            performance: { type: integer }
+            quality: { type: integer }
+
+    BomExplosionLine:
+      type: object
+      properties:
+        partId: { type: string, nullable: true }
+        partName: { type: string }
+        qtyPerUnit:
+          type: number
+          description: >
+            qty_per_unit of the BOM row where this line was first encountered, relative to its
+            immediate parent SKU — see README for the aggregation caveat when a part is reached
+            via more than one path.
+        requiredQty: { type: number, description: Fully multiplied total required for the exploded qty. }
+        sourceSku: { type: string, description: Immediate parent SKU whose BOM produced this line. }
+        level: { type: integer, description: '0 = direct component of the top-level SKU; deeper otherwise.' }
+
+    BomExplosionResult:
+      type: object
+      description: Ad-hoc explosion result — see GET /bom-explosion/sku/{sku}.
+      properties:
+        sku: { type: string }
+        qty: { type: number }
+        totalLines: { type: integer }
+        maxDepthReached: { type: integer }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/BomExplosionLine' }
+
+    OrderBomLine:
+      type: object
+      properties:
+        id: { type: integer }
+        partId: { type: string, nullable: true }
+        partName: { type: string }
+        qtyPerUnit: { type: number }
+        requiredQty: { type: number }
+
+    OrderBomSnapshot:
+      type: object
+      description: A cached (or freshly computed) order_bom_requirements snapshot for one order.
+      properties:
+        orderId: { type: string }
+        sku: { type: string }
+        qty: { type: number }
+        computedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null only when the order's SKU has zero BOM rows — see README.
+        totalLines: { type: integer }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/OrderBomLine' }
+
+    CtbShortage:
+      type: object
+      properties:
+        partId: { type: string, nullable: true }
+        partName: { type: string }
+        requiredQty: { type: number }
+        availableStock: { type: number }
+        shortQty: { type: number, description: 'max(0, requiredQty - availableStock)' }
+
+    CtbOrderResult:
+      type: object
+      properties:
+        orderId: { type: string }
+        sku: { type: string }
+        qty: { type: number }
+        ctbStatus: { type: string, enum: ['Clear To Build', 'RM Shortage'] }
+        ctbCheckedAt: { type: string, format: date-time }
+        evaluatedLive:
+          type: boolean
+          description: >
+            true if this response just ran a fresh evaluation (authoritative shortages); false if
+            served from the freshness-window cache — see README "Module 6".
+        shortages:
+          type: array
+          items: { $ref: '#/components/schemas/CtbShortage' }
+
+    CtbDashboardRow:
+      type: object
+      properties:
+        orderId: { type: string }
+        sku: { type: string }
+        qty: { type: number }
+        status: { type: string, description: Order status (Module 2 enum). }
+        ctbStatus: { type: string, enum: ['Clear To Build', 'RM Shortage'], nullable: true }
+        ctbCheckedAt: { type: string, format: date-time, nullable: true }
+        neverChecked: { type: boolean }
+        shortages:
+          type: array
+          items: { $ref: '#/components/schemas/CtbShortage' }
+          description: Populated only when ctbStatus is 'RM Shortage'.
+
+    RecheckAllSummary:
+      type: object
+      properties:
+        totalEvaluated: { type: integer }
+        clearToBuildCount: { type: integer }
+        rmShortageCount: { type: integer }
+
+    AffectedOrder:
+      type: object
+      properties:
+        orderId: { type: string }
+        client: { type: string }
+        priority: { type: string, enum: [Low, Medium, High] }
+        dueDate: { type: string, format: date, nullable: true }
+        shortQty: { type: number }
+        ctbCheckedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: How fresh this order's shortage figure is — see README "Module 7".
+
+    PartShortageSummary:
+      type: object
+      properties:
+        partId: { type: string, nullable: true }
+        partName: { type: string }
+        totalShortQty: { type: number }
+        affectedOrderCount: { type: integer }
+        highestPriority: { type: string, enum: [Low, Medium, High] }
+        affectedOrders:
+          type: array
+          items: { $ref: '#/components/schemas/AffectedOrder' }
+
+    CriticalPartRow:
+      type: object
+      properties:
+        partId: { type: string }
+        partName: { type: string }
+        stock: { type: number }
+        criticalThreshold: { type: number }
+        deficit: { type: number, description: 'criticalThreshold - stock; always >= 0 on this endpoint.' }
+
+    MaterialsSummary:
+      type: object
+      properties:
+        totalShortagePartsCount: { type: integer }
+        totalCriticalPartsCount: { type: integer }
+        totalAffectedOrdersCount: { type: integer }
+        affectedOrdersByPriority:
+          type: object
+          properties:
+            High: { type: integer }
+            Medium: { type: integer }
+            Low: { type: integer }
+
+    MaterialPartDetail:
+      type: object
+      properties:
+        partId: { type: string }
+        partName: { type: string }
+        stock: { type: number }
+        criticalThreshold: { type: number, nullable: true }
+        deficit:
+          type: number
+          nullable: true
+          description: criticalThreshold - stock (unclamped, can be negative); null when no threshold is set.
+        totalShortQty: { type: number }
+        affectedOrders:
+          type: array
+          items: { $ref: '#/components/schemas/AffectedOrder' }
+        recentTransactions:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              delta: { type: number }
+              reason: { type: string, nullable: true }
+              createdAt: { type: string, format: date-time }
+
+    MissingComponent:
+      type: object
+      properties:
+        partId: { type: string, nullable: true }
+        partName: { type: string }
+        requiredQty: { type: number }
+        availableStock: { type: number }
+        procurementRequiredQty: { type: number, description: "Module 6's shortQty, renamed for this report — see README." }
+
+    OrderShortageReportRow:
+      type: object
+      properties:
+        orderId: { type: string }
+        client: { type: string }
+        sku: { type: string }
+        product: { type: string }
+        qty: { type: number }
+        dueDate: { type: string, format: date, nullable: true }
+        priority: { type: string, enum: [Low, Medium, High] }
+        status: { type: string, description: Order status (Module 2 enum). }
+        ctbCheckedAt: { type: string, format: date-time, nullable: true }
+        missingComponents:
+          type: array
+          items: { $ref: '#/components/schemas/MissingComponent' }
+        urgencyScore: { type: number }
+        isOverdue: { type: boolean }
+        daysToDue: { type: integer, nullable: true }
+        shortagePct:
+          type: number
+          description: Severity among the order's short components only, not overall BOM completeness — see README.
+
+    SingleOrderShortageReport:
+      type: object
+      properties:
+        orderId: { type: string }
+        reportStatus: { type: string, enum: [reported, not_in_shortage, never_checked, closed] }
+        report:
+          allOf:
+            - $ref: '#/components/schemas/OrderShortageReportRow'
+          nullable: true
+          description: Populated only when reportStatus is 'reported'.
+
+    PrLineItem:
+      type: object
+      properties:
+        id: { type: integer }
+        prId: { type: integer }
+        partId: { type: string, nullable: true }
+        partName: { type: string }
+        totalRequiredQty: { type: number, description: Summed across every non-Closed order's BOM requirement. }
+        currentStockQty: { type: number }
+        netRequirementQty: { type: number, description: "max(0, totalRequiredQty - currentStockQty); only rows > 0 are ever stored." }
+
+    PrStatusHistoryEntry:
+      type: object
+      properties:
+        id: { type: integer }
+        prId: { type: integer }
+        oldStatus: { type: string, enum: [Draft, Sent, Approved, Fulfilled, Cancelled], nullable: true }
+        newStatus: { type: string, enum: [Draft, Sent, Approved, Fulfilled, Cancelled] }
+        changedBy: { type: string, nullable: true }
+        changedAt: { type: string, format: date-time }
+
+    PurchaseRequisition:
+      type: object
+      properties:
+        id: { type: integer }
+        prNumber: { type: string, example: PR-20260801-01 }
+        status: { type: string, enum: [Draft, Sent, Approved, Fulfilled, Cancelled] }
+        generatedBy: { type: string, nullable: true }
+        generatedAt: { type: string, format: date-time }
+        notes: { type: string, nullable: true }
+        lineItems:
+          type: array
+          items: { $ref: '#/components/schemas/PrLineItem' }
+        statusHistory:
+          type: array
+          items: { $ref: '#/components/schemas/PrStatusHistoryEntry' }
+
+    GeneratePrResult:
+      type: object
+      properties:
+        created: { type: boolean }
+        message: { type: string }
+        purchaseRequisition:
+          allOf:
+            - $ref: '#/components/schemas/PurchaseRequisition'
+          nullable: true
+          description: Null when created is false (no shortfall across any active order).
+
+    ScheduledAssignment:
+      type: object
+      properties:
+        orderId: { type: string }
+        sku: { type: string }
+        productType: { type: string }
+        qty: { type: integer }
+        lineId: { type: string }
+        lineName: { type: string }
+        dailyOutput: { type: number }
+        workersPresent: { type: integer }
+        workersRequired: { type: integer }
+        daysNeeded: { type: integer }
+        startDate: { type: string, format: date }
+        estEndDate: { type: string, format: date }
+        dueDate: { type: string, format: date, nullable: true }
+        slackDays: { type: integer, nullable: true, description: Null when the order has no dueDate. }
+        status: { type: string, enum: ['On Track', 'At Risk'] }
+
+    UnscheduledOrder:
+      type: object
+      properties:
+        orderId: { type: string }
+        reason: { type: string, enum: [no_compatible_line, no_feasible_line] }
+
+    FailedAssignment:
+      type: object
+      description: >
+        An order the engine chose to schedule but whose production_schedule row and/or Open ->
+        Scheduled transition then failed to persist (dryRun: false only — always empty for a dry
+        run). Recorded explicitly, per order, rather than aborting the rest of the batch — see
+        README "Module 10: partial-failure handling".
+      properties:
+        orderId: { type: string }
+        error: { type: string, description: The underlying error's message. }
+
+    RunSchedulingResult:
+      type: object
+      properties:
+        scheduled:
+          type: array
+          items: { $ref: '#/components/schemas/ScheduledAssignment' }
+          description: Successfully persisted assignments when dryRun is false; the full proposed set when dryRun is true.
+        unscheduled:
+          type: array
+          items: { $ref: '#/components/schemas/UnscheduledOrder' }
+        failed:
+          type: array
+          items: { $ref: '#/components/schemas/FailedAssignment' }
+          description: Always empty when dryRun is true.
+        summary:
+          type: object
+          properties:
+            totalEligible: { type: integer }
+            scheduledCount: { type: integer }
+            unscheduledCount: { type: integer }
+            failedCount: { type: integer }
+
+    ProductionScheduleRow:
+      type: object
+      properties:
+        id: { type: integer }
+        orderId: { type: string }
+        client: { type: string }
+        sku: { type: string }
+        product: { type: string }
+        qty: { type: integer }
+        lineId: { type: string, nullable: true }
+        lineName: { type: string, nullable: true }
+        dailyOutput: { type: number, nullable: true }
+        workersPresent: { type: integer, nullable: true }
+        workersRequired: { type: integer, nullable: true }
+        shiftMode: { type: string, nullable: true }
+        daysNeeded: { type: number, nullable: true }
+        startDate: { type: string, format: date, nullable: true }
+        estEndDate: { type: string, format: date, nullable: true }
+        dueDate: { type: string, format: date, nullable: true }
+        slackDays: { type: integer, nullable: true }
+        status: { type: string, enum: [OnTrack, AtRisk, RMShortage] }
+        createdAt: { type: string, format: date-time }
+
+    AtRiskOrderRow:
+      type: object
+      properties:
+        orderId: { type: string }
+        client: { type: string }
+        priority: { type: string, enum: [Low, Medium, High] }
+        dueDate: { type: string, format: date, nullable: true }
+        lineId: { type: string, nullable: true }
+        lineName: { type: string, nullable: true }
+        qty: { type: integer }
+        dailyOutput: { type: number, nullable: true }
+        daysNeeded: { type: number, nullable: true }
+        startDate: { type: string, format: date, nullable: true }
+        estEndDate: { type: string, format: date, nullable: true }
+        slackDays: { type: integer, nullable: true }
+        status: { type: string, enum: [OnTrack, AtRisk, RMShortage] }
+
+    RecommendationOption:
+      type: object
+      description: >
+        A planning estimate for one of three levers (Overtime / Extended Shift / Additional Line),
+        never a guaranteed outcome — see isEstimate and the top-level disclaimer on
+        RiskRecommendationsResult.
+      properties:
+        option: { type: string, enum: [Overtime, Extended Shift, Additional Line] }
+        isEstimate: { type: boolean, example: true }
+        applicable: { type: boolean }
+        reason: { type: string, description: Present only when applicable is false. }
+        newDailyOutput: { type: number, description: Present only when applicable is true. }
+        newDaysNeeded: { type: integer }
+        newEstEndDate: { type: string, format: date }
+        newSlackDays: { type: integer }
+        closesGap: { type: boolean, description: "newSlackDays >= 0." }
+        recommendedLineId: { type: string, description: Additional Line only. }
+        recommendedLineName: { type: string, description: Additional Line only. }
+        otherFeasibleLineCount: { type: integer, description: "Additional Line only — count of other feasible candidates besides the recommended one." }
+
+    RiskRecommendationsResult:
+      type: object
+      properties:
+        orderId: { type: string }
+        currentSlackDays: { type: integer, description: Module 10's already-stored slackDays — read, not recomputed. }
+        options:
+          type: array
+          items: { $ref: '#/components/schemas/RecommendationOption' }
+        disclaimer: { type: string }
+
+    AtRiskRecommendationsReport:
+      type: object
+      properties:
+        orderId: { type: string }
+        reportStatus: { type: string, enum: [reported, not_scheduled, not_at_risk] }
+        recommendations:
+          allOf:
+            - $ref: '#/components/schemas/RiskRecommendationsResult'
+          nullable: true
+          description: Populated only when reportStatus is 'reported'.
+
+    RiskSummary:
+      type: object
+      properties:
+        totalAtRisk: { type: integer }
+        totalOnTrack: { type: integer }
+        atRiskByPriority:
+          type: object
+          properties:
+            High: { type: integer }
+            Medium: { type: integer }
+            Low: { type: integer }
+
+    OrderSearchResult:
+      type: object
+      properties:
+        orderId: { type: string }
+        client: { type: string }
+        sku: { type: string }
+        product: { type: string }
+        qty: { type: integer }
+        dueDate: { type: string, format: date, nullable: true }
+        currentStage: { type: string, description: Exactly order.status (Module 2's enum). }
+        materialStatus: { type: string, nullable: true, description: Exactly order.ctbStatus (Module 6's enum). }
+        pendingQty:
+          nullable: true
+          description: >
+            Always null today — no schema linkage exists between production output and a specific
+            order. See README "Module 12" (the pendingQty gap) before assuming this can be
+            populated.
+        pendingQtyNote: { type: string }
+        expectedCompletionDate: { type: string, format: date, nullable: true, description: Module 10's production_schedule.est_end_date, if a schedule row exists. }
+        expectedCompletionDateNote: { type: string, nullable: true, description: Set when expectedCompletionDate is null (not yet scheduled). }
+
+    ProductSearchResult:
+      type: object
+      properties:
+        modelId: { type: string }
+        sku: { type: string }
+        modelName: { type: string }
+        productType: { type: string }
+
+    LineSearchResult:
+      type: object
+      properties:
+        lineId: { type: string }
+        lineName: { type: string }
+
+    SearchResponse:
+      type: object
+      properties:
+        query: { type: string }
+        orders:
+          type: array
+          items: { $ref: '#/components/schemas/OrderSearchResult' }
+        products:
+          type: array
+          items: { $ref: '#/components/schemas/ProductSearchResult' }
+        lines:
+          type: array
+          items: { $ref: '#/components/schemas/LineSearchResult' }
+
+    TestingPlan:
+      type: object
+      properties:
+        id: { type: integer }
+        productType: { type: string, example: OTG }
+        planName: { type: string }
+        description: { type: string, nullable: true }
+
+    QcBatch:
+      type: object
+      properties:
+        id: { type: integer }
+        orderId: { type: string }
+        sku: { type: string }
+        batchNumber: { type: string, example: BATCH-20260801-01 }
+        barcodeValue:
+          type: string
+          description: The barcode's data payload only (== batchNumber) — no barcode image is generated. See README "Module 13".
+        serialRangeStart: { type: integer }
+        serialRangeEnd: { type: integer }
+        testingPlanId: { type: integer, nullable: true }
+        generatedAt: { type: string, format: date-time }
+
+    QcBatchDetail:
+      allOf:
+        - $ref: '#/components/schemas/QcBatch'
+        - type: object
+          properties:
+            order:
+              type: object
+              properties:
+                orderId: { type: string }
+                client: { type: string }
+                sku: { type: string }
+                product: { type: string }
+                qty: { type: integer }
+                status: { type: string }
+                dueDate: { type: string, format: date, nullable: true }
+            testingPlan:
+              allOf:
+                - $ref: '#/components/schemas/TestingPlan'
+              nullable: true
+
+    GeneratedQcBatch:
+      type: object
+      properties:
+        orderId: { type: string }
+        batchNumber: { type: string }
+        barcodeValue: { type: string }
+        serialRangeStart: { type: integer }
+        serialRangeEnd: { type: integer }
+        testingPlanId: { type: integer, nullable: true }
+
+    GenerateQcBatchesResult:
+      type: object
+      properties:
+        generated:
+          type: array
+          items: { $ref: '#/components/schemas/GeneratedQcBatch' }
+        skipped:
+          type: array
+          items:
+            type: object
+            properties:
+              orderId: { type: string }
+              reason: { type: string }
+        failed:
+          type: array
+          items:
+            type: object
+            properties:
+              orderId: { type: string }
+              error: { type: string }
+        warnings:
+          type: array
+          items:
+            type: object
+            properties:
+              orderId: { type: string }
+              message: { type: string }
+        summary:
+          type: object
+          properties:
+            totalEligible: { type: integer }
+            generatedCount: { type: integer }
+            skippedCount: { type: integer }
+            failedCount: { type: integer }
+
+    ProductionPeriodRow:
+      type: object
+      properties:
+        periodLabel: { type: string, format: date-time, description: The truncated period start (date_trunc'd by day/week/month). }
+        totalOutputQty: { type: number }
+        totalGoodQty: { type: number }
+        avgAttendancePct: { type: number, nullable: true }
+
+    PlanningHealth:
+      type: object
+      description: >
+        A current-state snapshot — no date range. See README "Module 14" for why Delayed and At
+        Risk are deliberately two independent queries against two different signals.
+      properties:
+        scheduledCount: { type: integer }
+        delayedCount: { type: integer, description: Lagging indicator — dueDate already passed, status not yet Dispatch Ready/Closed. Computed fresh, not the stored At Risk flag. }
+        atRiskCount: { type: integer, description: Module 10/11's forward-looking slack projection (production_schedule.status = 'At Risk'), reused directly via Module 11's getRiskSummary(). }
+
+    MaterialsHealth:
+      type: object
+      properties:
+        ctbBreakdown:
+          type: object
+          properties:
+            clearCount: { type: integer }
+            shortageCount: { type: integer }
+            neverCheckedCount: { type: integer }
+        rmShortagePartsCount: { type: integer, description: Reused directly from Module 7's getMaterialsSummary(). }
+        procurementStatusBreakdown:
+          type: object
+          properties:
+            Draft: { type: integer }
+            Sent: { type: integer }
+            Approved: { type: integer }
+            Fulfilled: { type: integer }
+            Cancelled: { type: integer }
+
+    ManagementMetrics:
+      type: object
+      description: >
+        See README "Module 14" for the four metric definitions — OEE and Capacity Utilization are
+        the SAME underlying number as Module 4's oeePct/performancePct; Production Efficiency and
+        Delivery Performance are genuinely different, newly-computed metrics.
+      properties:
+        oeePct: { type: number, nullable: true, description: Exactly Module 4's aggregate oeePct for this range. }
+        capacityUtilizationPct: { type: number, nullable: true, description: Exactly Module 4's aggregate performancePct for this range — same number, different label. }
+        productionEfficiencyPct: { type: number, description: Output-weighted average of production_lines.efficiencyPct — see calculateWeightedEfficiency. }
+        deliveryPerformancePct: { type: number, description: On-time Dispatch Ready completion rate — see calculateOnTimeRate. }
+        detail:
+          type: object
+          description: Supporting counts/sums so the four top-level numbers are auditable, not opaque.
+          properties:
+            oee: { type: object, description: Module 4's full OeeAggregateResult (totals, excludedLogsCount, etc.). }
+            productionEfficiency:
+              type: object
+              properties:
+                lineCount: { type: integer }
+                lines:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      lineId: { type: string }
+                      lineName: { type: string }
+                      efficiencyPct: { type: number }
+                      totalOutputQty: { type: number }
+            deliveryPerformance:
+              type: object
+              properties:
+                rate: { type: number }
+                onTimeCount: { type: integer }
+                totalCount: { type: integer }
+                excludedNoDueDateCount: { type: integer }
+
+    DashboardOverview:
+      type: object
+      properties:
+        production:
+          type: array
+          items: { $ref: '#/components/schemas/ProductionPeriodRow' }
+        planning: { $ref: '#/components/schemas/PlanningHealth' }
+        materials: { $ref: '#/components/schemas/MaterialsHealth' }
+        management: { $ref: '#/components/schemas/ManagementMetrics' }
+
+paths:
+  /auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        '200':
+          description: >
+            Login succeeded. Returns { token, user }. token is a JWT bearer
+            token, valid for 8 hours, with no refresh token.
+        '401': { description: Invalid email or password (generic message either way) }
+        '403': { description: This account has been deactivated }
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      responses:
+        '200': { description: The authenticated user, re-fetched fresh from the database }
+        '401': { description: Missing, invalid, or expired token }
+
+  /auth/users:
+    post:
+      tags: [Auth]
+      description: >
+        Admin only. securityQuestion/securityAnswer are required for every
+        new user — see "Self-Service Password Reset". securityAnswer is
+        never stored or returned as-is; it's normalized (trimmed,
+        lowercased) and bcrypt-hashed into securityAnswerHash.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, name, role, securityQuestion, securityAnswer]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password, minLength: 8 }
+                name: { type: string }
+                role: { type: string, enum: [Admin, StoreManager, ProductionManager] }
+                securityQuestion:
+                  type: string
+                  enum:
+                    - What was the name of your first pet?
+                    - What city were you born in?
+                    - What was your school's name?
+                    - What is your mother's maiden name?
+                securityAnswer: { type: string, minLength: 1 }
+      responses:
+        '201': { description: Created (never includes passwordHash or securityAnswerHash) }
+        '400': { description: Validation error }
+        '401': { description: Missing, invalid, or expired token }
+        '403': { description: Caller is not Admin }
+        '409': { description: Email already in use }
+    get:
+      tags: [Auth]
+      description: Admin only.
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: role
+          in: query
+          schema: { type: string, enum: [Admin, StoreManager, ProductionManager] }
+      responses:
+        '200': { description: Paginated list of users (never includes passwordHash) }
+        '401': { description: Missing, invalid, or expired token }
+        '403': { description: Caller is not Admin }
+
+  /auth/users/{userId}:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema: { type: integer }
+    patch:
+      tags: [Auth]
+      description: >
+        Admin only. Prefer deactivating (isActive: false) over any kind of
+        delete — there is no delete endpoint for users, so attribution
+        fields (changedBy/savedBy/generatedBy) recorded against a user stay
+        intact in the audit trail. securityQuestion/securityAnswer are
+        optional but must be provided together — this is how an Admin fixes
+        a legacy account still holding the SECURITY_QUESTION_NOT_SET
+        sentinel (see "Self-Service Password Reset"); there is no
+        self-service "update my own security question" endpoint in this pass.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                role: { type: string, enum: [Admin, StoreManager, ProductionManager] }
+                isActive: { type: boolean }
+                securityQuestion:
+                  type: string
+                  enum:
+                    - What was the name of your first pet?
+                    - What city were you born in?
+                    - What was your school's name?
+                    - What is your mother's maiden name?
+                securityAnswer: { type: string, minLength: 1 }
+      responses:
+        '200': { description: Updated user (never includes passwordHash or securityAnswerHash) }
+        '400': { description: Validation error (e.g. empty body, or securityQuestion without securityAnswer) }
+        '401': { description: Missing, invalid, or expired token }
+        '403': { description: Caller is not Admin }
+        '404': { description: Not found }
+
+  /auth/captcha:
+    get:
+      tags: [Auth]
+      security: []
+      description: >
+        Public. Generates a simple arithmetic challenge — a basic
+        bot-deterrent, not true human verification (see "Self-Service
+        Password Reset"). Stateless: the expected answer is encoded in the
+        signed, short-lived captchaToken, verified as part of
+        POST /auth/forgot-password/verify (there is no standalone
+        verify-captcha endpoint).
+      responses:
+        '200':
+          description: >
+            { question, captchaToken }. question is e.g. "7 + 12 = ?".
+            captchaToken is a JWT valid for 5 minutes.
+
+  /auth/forgot-password/verify:
+    post:
+      tags: [Auth]
+      security: []
+      description: >
+        Public, rate-limited identically to /auth/login. The actual identity
+        check: CAPTCHA (bot deterrence) plus the account's security question
+        (proof of ownership), both required. See "Self-Service Password
+        Reset" for the generic-failure-message and legacy-account
+        (SECURITY_QUESTION_NOT_SET) behavior in detail.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, captchaToken, captchaAnswer, securityAnswer]
+              properties:
+                email: { type: string, format: email }
+                captchaToken: { type: string }
+                captchaAnswer: { type: number }
+                securityAnswer: { type: string, minLength: 1 }
+      responses:
+        '200':
+          description: >
+            { resetToken }. A single-use JWT valid for 15 minutes, returned
+            directly (no email infrastructure exists yet — see "Self-Service
+            Password Reset" for why this is an accepted tradeoff here).
+        '400': { description: Validation error }
+        '401':
+          description: >
+            Incorrect CAPTCHA, OR a generic identity-check failure (wrong
+            email, wrong security answer, or inactive account — deliberately
+            indistinguishable from each other).
+        '409': { description: Account exists but has no real security question configured yet (ask an Admin) }
+        '429': { description: Too many attempts — same rate limiting as /auth/login }
+
+  /auth/forgot-password/reset:
+    post:
+      tags: [Auth]
+      security: []
+      description: Public. Consumes a resetToken issued by /auth/forgot-password/verify.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resetToken, newPassword]
+              properties:
+                resetToken: { type: string }
+                newPassword: { type: string, format: password, minLength: 8 }
+      responses:
+        '200': { description: Password reset. Every other outstanding unused reset token for this user is also invalidated. }
+        '400': { description: Validation error (e.g. newPassword too short) }
+        '401': { description: Invalid, expired, already-used, or malformed resetToken }
+
+  /products:
+    get:
+      tags: [Products]
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: productType
+          in: query
+          schema: { type: string }
+        - name: search
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Paginated list of products
+    post:
+      tags: [Products]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Product'
+              required: [modelId, modelName, productType, sku, taktTimeSec, manpowerRequired, noOfStations]
+      responses:
+        '201': { description: Created }
+        '400': { description: Validation error }
+
+  /products/{modelId}:
+    parameters:
+      - name: modelId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Products]
+      responses:
+        '200': { description: Product }
+        '404': { description: Not found }
+    patch:
+      tags: [Products]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Product' }
+      responses:
+        '200': { description: Updated }
+        '404': { description: Not found }
+    delete:
+      tags: [Products]
+      responses:
+        '200': { description: Deleted }
+        '400': { description: Blocked by references from orders/BOM/daily logs }
+        '404': { description: Not found }
+
+  /lines:
+    get:
+      tags: [Lines]
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: status
+          in: query
+          schema: { type: string, enum: [Active, Offline] }
+      responses:
+        '200': { description: Paginated list of lines }
+    post:
+      tags: [Lines]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductionLine' }
+      responses:
+        '201': { description: Created }
+        '400': { description: Validation error }
+
+  /lines/{lineId}:
+    parameters:
+      - name: lineId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Lines]
+      responses:
+        '200': { description: Line with compatibility }
+        '404': { description: Not found }
+    patch:
+      tags: [Lines]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductionLine' }
+      responses:
+        '200': { description: Updated }
+        '404': { description: Not found }
+    delete:
+      tags: [Lines]
+      responses:
+        '200': { description: Deleted }
+        '400': { description: Blocked by references from HR/schedule/daily log }
+        '404': { description: Not found }
+
+  /hr-teams:
+    get:
+      tags: [HR Teams]
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: lineId
+          in: query
+          schema: { type: string }
+      responses:
+        '200': { description: Paginated list of HR teams }
+    post:
+      tags: [HR Teams]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HrTeam' }
+      responses:
+        '201': { description: Created }
+        '400': { description: Validation error, including unknown lineId }
+
+  /hr-teams/{teamId}:
+    parameters:
+      - name: teamId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [HR Teams]
+      responses:
+        '200': { description: HR team }
+        '404': { description: Not found }
+    patch:
+      tags: [HR Teams]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/HrTeam' }
+      responses:
+        '200': { description: Updated }
+        '400': { description: Unknown lineId }
+        '404': { description: Not found }
+    delete:
+      tags: [HR Teams]
+      responses:
+        '200': { description: Deleted }
+        '404': { description: Not found }
+
+  /bom/model/{modelRef}:
+    parameters:
+      - name: modelRef
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [BOM]
+      responses:
+        '200': { description: Exploded parts list for the SKU }
+        '400': { description: Unknown modelRef }
+
+  /bom:
+    post:
+      tags: [BOM]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BomComponent' }
+      responses:
+        '201': { description: Created }
+        '400': { description: Unknown modelRef or partId }
+
+  /bom/bulk:
+    post:
+      tags: [BOM]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                modelRef: { type: string }
+                items:
+                  type: array
+                  items: { $ref: '#/components/schemas/BomComponent' }
+      responses:
+        '201': { description: All rows imported in one transaction }
+        '400': { description: Unknown modelRef or partId(s) }
+
+  /bom/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    patch:
+      tags: [BOM]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BomComponent' }
+      responses:
+        '200': { description: Updated }
+        '404': { description: Not found }
+    delete:
+      tags: [BOM]
+      responses:
+        '200': { description: Deleted }
+        '404': { description: Not found }
+
+  /rm-inventory:
+    get:
+      tags: [RM Inventory]
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: search
+          in: query
+          schema: { type: string }
+      responses:
+        '200': { description: Paginated list of RM inventory }
+    post:
+      tags: [RM Inventory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RmInventory' }
+      responses:
+        '201': { description: Created }
+        '400': { description: Validation error }
+
+  /rm-inventory/{partId}:
+    parameters:
+      - name: partId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [RM Inventory]
+      responses:
+        '200': { description: RM inventory row }
+        '404': { description: Not found }
+    patch:
+      tags: [RM Inventory]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RmInventory' }
+      responses:
+        '200': { description: 'Updated (direct overwrite, no ledger entry)' }
+        '404': { description: Not found }
+    delete:
+      tags: [RM Inventory]
+      responses:
+        '200': { description: Deleted }
+        '400': { description: Blocked by BOM references }
+        '404': { description: Not found }
+
+  /rm-inventory/{partId}/adjust-stock:
+    parameters:
+      - name: partId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [RM Inventory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                delta: { type: number, description: 'Signed delta, e.g. -5 or +20' }
+                reason: { type: string }
+              required: [delta, reason]
+      responses:
+        '200': { description: Updated inventory + created rm_transactions row }
+        '400': { description: Adjustment would result in negative stock }
+        '404': { description: Not found }
+
+  /rm-inventory/{partId}/transactions:
+    parameters:
+      - name: partId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [RM Inventory]
+      responses:
+        '200': { description: Stock adjustment ledger for this part }
+        '404': { description: Not found }
+
+  /orders:
+    get:
+      tags: [Orders]
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: priority
+          in: query
+          schema: { type: string }
+        - name: client
+          in: query
+          schema: { type: string }
+        - name: sku
+          in: query
+          schema: { type: string }
+        - name: sortBy
+          in: query
+          schema: { type: string, enum: [dueDate, createdAt], default: createdAt }
+        - name: sortDir
+          in: query
+          schema: { type: string, enum: [asc, desc], default: desc }
+      responses:
+        '200': { description: Paginated list of orders }
+    post:
+      tags: [Orders]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                orderId: { type: string }
+                client: { type: string }
+                sku: { type: string }
+                qty: { type: integer }
+                dueDate: { type: string, format: date }
+                priority: { type: string, enum: [Low, Medium, High] }
+              required: [orderId, client, sku, qty]
+      responses:
+        '201': { description: 'Created (status always starts at Open; product is snapshotted from the SKU''s productType)' }
+        '400': { description: Unknown sku, qty <= 0, or dueDate in the past }
+
+  /orders/{orderId}:
+    parameters:
+      - name: orderId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Orders]
+      responses:
+        '200': { description: Order }
+        '404': { description: Not found }
+    delete:
+      tags: [Orders]
+      responses:
+        '200': { description: Deleted }
+        '400': { description: Status is not Open }
+        '404': { description: Not found }
+
+  /orders/{orderId}/status:
+    parameters:
+      - name: orderId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [Orders]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                newStatus:
+                  type: string
+                  enum: [Open, PendingRM, Scheduled, Running, QC, DispatchReady, Closed]
+                changedBy: { type: string }
+              required: [newStatus]
+      responses:
+        '200': { description: Order moved to newStatus; order_status_history row written }
+        '400': { description: Invalid transition (must follow the sequential flow) }
+        '404': { description: Not found }
+
+  /orders/{orderId}/history:
+    parameters:
+      - name: orderId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Orders]
+      responses:
+        '200':
+          description: Full status history for the order
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/OrderStatusHistory' }
+        '404': { description: Not found }
+
+  /daily-logs:
+    get:
+      tags: [Daily Logs]
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: dateFrom
+          in: query
+          schema: { type: string, format: date }
+        - name: dateTo
+          in: query
+          schema: { type: string, format: date }
+        - name: lineId
+          in: query
+          schema: { type: string }
+        - name: modelId
+          in: query
+          schema: { type: string }
+        - name: shift
+          in: query
+          schema: { type: string }
+      responses:
+        '200': { description: 'Paginated list of daily logs, sorted by logDate desc, savedAt desc' }
+    post:
+      tags: [Daily Logs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/DailyProductionLog'
+                - type: object
+                  properties:
+                    downtimeEntries:
+                      type: array
+                      items: { $ref: '#/components/schemas/DowntimeEntry' }
+              required: [logDate, savedBy]
+      responses:
+        '201':
+          description: >
+            Created. logId is always server-generated (DL-YYYYMMDD-NN); absentEmployees and
+            attendancePct are always server-computed and ignore any client-sent value.
+        '400': { description: Validation error (unknown lineId/modelId, presentEmployees > totalEmployees, missing notes on reason=Other, ...) }
+
+  /daily-logs/{logId}:
+    parameters:
+      - name: logId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Daily Logs]
+      responses:
+        '200': { description: Daily log with downtimeEntries and stationAssignments }
+        '404': { description: Not found }
+    patch:
+      tags: [Daily Logs]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DailyProductionLog' }
+      responses:
+        '200': { description: Updated (absentEmployees/attendancePct recomputed if totals changed) }
+        '404': { description: Not found }
+        '409': { description: logDate is more than the edit-window (1 day) in the past }
+
+  /daily-logs/{logId}/downtime:
+    parameters:
+      - name: logId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Daily Logs]
+      responses:
+        '200':
+          description: Downtime entries for this log
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DowntimeEntry' }
+        '404': { description: Not found }
+    post:
+      tags: [Daily Logs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DowntimeEntry' }
+      responses:
+        '201': { description: Downtime entry added }
+        '400': { description: 'Invalid reason, minutes <= 0, or missing notes for reason=Other' }
+        '404': { description: Log not found }
+
+  /daily-logs/{logId}/downtime/{downtimeId}:
+    parameters:
+      - name: logId
+        in: path
+        required: true
+        schema: { type: string }
+      - name: downtimeId
+        in: path
+        required: true
+        schema: { type: integer }
+    delete:
+      tags: [Daily Logs]
+      responses:
+        '200': { description: Downtime entry deleted }
+        '404': { description: Not found }
+
+  /daily-logs/summary/downtime-by-reason:
+    get:
+      tags: [Daily Logs]
+      parameters:
+        - name: dateFrom
+          in: query
+          schema: { type: string, format: date }
+        - name: dateTo
+          in: query
+          schema: { type: string, format: date }
+        - name: lineId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Total downtime minutes grouped by reason across the date range
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    reason: { type: string }
+                    totalMinutes: { type: number }
+
+  /oee/{logId}:
+    parameters:
+      - name: logId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [OEE]
+      summary: OEE breakdown for a single daily log
+      responses:
+        '200':
+          description: Full OEE breakdown, raw inputs, and null-reason notes for this log
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OeeResult' }
+        '404': { description: Not found }
+
+  /oee:
+    get:
+      tags: [OEE]
+      summary: OEE across a date range, one row per daily log
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: dateFrom
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: dateTo
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: lineId
+          in: query
+          schema: { type: string }
+        - name: modelId
+          in: query
+          schema: { type: string }
+        - name: shift
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Paginated list of OeeResult rows, sorted by logDate desc
+        '400': { description: dateFrom/dateTo missing or dateFrom after dateTo }
+
+  /oee/summary:
+    get:
+      tags: [OEE]
+      summary: Aggregated OEE for a date range (summed ratios, not averaged percentages)
+      parameters:
+        - name: dateFrom
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: dateTo
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: lineId
+          in: query
+          schema: { type: string }
+        - name: modelId
+          in: query
+          schema: { type: string }
+        - name: shift
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: One aggregated OeeAggregateResult across all matching logs
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OeeAggregateResult' }
+        '400': { description: dateFrom/dateTo missing or dateFrom after dateTo }
+
+  /oee/by-line:
+    get:
+      tags: [OEE]
+      summary: Aggregated OEE grouped by line
+      parameters:
+        - name: dateFrom
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: dateTo
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: lineId
+          in: query
+          schema: { type: string }
+        - name: modelId
+          in: query
+          schema: { type: string }
+        - name: shift
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: One OeeAggregateResult per lineId
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  allOf:
+                    - $ref: '#/components/schemas/OeeAggregateResult'
+                    - type: object
+                      properties:
+                        lineId: { type: string, nullable: true }
+                        lineName: { type: string, nullable: true }
+        '400': { description: dateFrom/dateTo missing or dateFrom after dateTo }
+
+  /oee/downtime-by-reason:
+    get:
+      tags: [OEE]
+      summary: Alias for GET /daily-logs/summary/downtime-by-reason (discoverability only, same query logic)
+      parameters:
+        - name: dateFrom
+          in: query
+          schema: { type: string, format: date }
+        - name: dateTo
+          in: query
+          schema: { type: string, format: date }
+        - name: lineId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Total downtime minutes grouped by reason across the date range
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    reason: { type: string }
+                    totalMinutes: { type: number }
+
+  /bom-explosion/sku/{sku}:
+    parameters:
+      - name: sku
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [BOM Explosion]
+      summary: Ad-hoc BOM explosion for a SKU + qty — no order, no persistence (what-if planning)
+      parameters:
+        - name: qty
+          in: query
+          required: true
+          schema: { type: number, minimum: 0, exclusiveMinimum: true }
+      responses:
+        '200':
+          description: Flattened, aggregated parts requirement for this SKU at this qty
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BomExplosionResult' }
+        '400': { description: qty missing, zero, or negative }
+        '404': { description: sku not found }
+        '409': { description: BOM cycle or max-depth exceeded in the BOM master data (see README) }
+
+  /bom-explosion/order/{orderId}:
+    parameters:
+      - name: orderId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [BOM Explosion]
+      summary: Get (or lazily compute + cache) an order's exploded BOM requirement snapshot
+      description: >
+        Returns the cached order_bom_requirements snapshot if one exists. Otherwise computes it
+        from the order's sku/qty, persists it, and returns the fresh result. See README
+        "lazy-compute-and-cache".
+      responses:
+        '200':
+          description: The (possibly freshly computed) order BOM requirement snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderBomSnapshot' }
+        '404': { description: order not found }
+        '409': { description: BOM cycle or max-depth exceeded in the BOM master data (see README) }
+    delete:
+      tags: [BOM Explosion]
+      summary: Clear an order's cached BOM requirement snapshot (does not touch the order itself)
+      responses:
+        '200': { description: Cache rows deleted (idempotent no-op if none existed) }
+        '404': { description: order not found }
+
+  /bom-explosion/order/{orderId}/recompute:
+    parameters:
+      - name: orderId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [BOM Explosion]
+      summary: Force-recompute an order's BOM requirement, replacing the cached snapshot
+      description: >
+        Always recalculates fresh from the order's current sku/qty and BOM master data, then
+        atomically replaces (deletes + reinserts) the cached order_bom_requirements rows.
+      responses:
+        '200':
+          description: The freshly computed order BOM requirement snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderBomSnapshot' }
+        '404': { description: order not found }
+        '409': { description: BOM cycle or max-depth exceeded in the BOM master data (see README) }
+
+  /ctb/order/{orderId}:
+    parameters:
+      - name: orderId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [CTB]
+      summary: Get (or freshness-window-cached) CTB evaluation for an order
+      description: >
+        Returns the cached ctbStatus/ctbCheckedAt + shortage breakdown if ctbCheckedAt is within
+        CTB_FRESHNESS_WINDOW_MS (5 minutes). Otherwise evaluates live against current
+        rm_inventory stock, persists the result, and returns it. See README "Module 6".
+      responses:
+        '200':
+          description: The (possibly cached) CTB evaluation for this order
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CtbOrderResult' }
+        '404': { description: order not found }
+        '409': { description: BOM cycle or max-depth exceeded while resolving the requirement (see README) }
+
+  /ctb/order/{orderId}/recheck:
+    parameters:
+      - name: orderId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [CTB]
+      summary: Force a fresh CTB evaluation, bypassing the freshness-window cache
+      responses:
+        '200':
+          description: The freshly evaluated CTB result for this order
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CtbOrderResult' }
+        '404': { description: order not found }
+        '409': { description: BOM cycle or max-depth exceeded while resolving the requirement (see README) }
+
+  /ctb/dashboard:
+    get:
+      tags: [CTB]
+      summary: All non-Closed orders' current CTB status at a glance (never triggers live evaluation)
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: status
+          in: query
+          description: Order status filter (Module 2 enum). Closed is always excluded regardless of this filter.
+          schema: { type: string }
+        - name: ctbStatus
+          in: query
+          schema: { type: string, enum: ['Clear To Build', 'RM Shortage'] }
+      responses:
+        '200':
+          description: Paginated list of CtbDashboardRow
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/CtbDashboardRow' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+
+  /ctb/recheck-all:
+    post:
+      tags: [CTB]
+      summary: Bulk-reevaluate CTB for every non-Closed order in one call
+      description: >
+        The expensive, all-orders live-recompute path — fetches BOM snapshots and rm_inventory
+        stock in bulk rather than per part, then writes all results in one transaction. Returns a
+        summary only; use GET /ctb/dashboard for per-order detail.
+      responses:
+        '200':
+          description: Bulk re-evaluation summary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RecheckAllSummary' }
+
+  /materials/shortages:
+    get:
+      tags: [Materials]
+      summary: Material-centric shortage view, grouped by part (reads Module 6's persisted cache only)
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: priority
+          in: query
+          description: Include only parts with at least one affecting order at or above this priority.
+          schema: { type: string, enum: [Low, Medium, High] }
+        - name: partId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Paginated list of PartShortageSummary, sorted by highestPriority desc then totalShortQty desc
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/PartShortageSummary' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+
+  /materials/critical:
+    get:
+      tags: [Materials]
+      summary: Parts at or below their critical threshold, sorted by deficit desc
+      responses:
+        '200':
+          description: List of CriticalPartRow
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CriticalPartRow' }
+
+  /materials/summary:
+    get:
+      tags: [Materials]
+      summary: Dashboard header counts, composed from the shortages and critical data sources
+      responses:
+        '200':
+          description: MaterialsSummary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MaterialsSummary' }
+
+  /materials/{partId}/critical-threshold:
+    parameters:
+      - name: partId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [Materials]
+      summary: Set or clear a part's critical stock threshold
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                criticalThreshold:
+                  type: number
+                  nullable: true
+                  description: A non-negative number sets the threshold; null clears it.
+              required: [criticalThreshold]
+      responses:
+        '200': { description: Updated RmInventory row }
+        '400': { description: criticalThreshold is negative or the wrong type }
+        '404': { description: partId not found in rm_inventory }
+
+  /materials/{partId}:
+    parameters:
+      - name: partId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Materials]
+      summary: Single-part detail — stock, threshold/deficit, affected orders, recent stock movement
+      responses:
+        '200':
+          description: MaterialPartDetail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MaterialPartDetail' }
+        '404': { description: partId not found in rm_inventory }
+
+  /shortage-report/orders:
+    get:
+      tags: [Shortage Report]
+      summary: Full order-wise shortage report, sorted by urgencyScore descending
+      description: >
+        Non-Closed orders currently in RM Shortage, joined with their order_ctb_shortages rows.
+        Never re-runs BOM explosion or CTB evaluation — reads Module 6's persisted output only.
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: priority
+          in: query
+          description: Exact match on the order's own priority.
+          schema: { type: string, enum: [Low, Medium, High] }
+        - name: overdueOnly
+          in: query
+          schema: { type: string, enum: ['true', 'false'] }
+      responses:
+        '200':
+          description: Paginated list of OrderShortageReportRow
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/OrderShortageReportRow' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+
+  /shortage-report/orders/{orderId}:
+    parameters:
+      - name: orderId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Shortage Report]
+      summary: Single-order shortage report
+      description: >
+        200 with reportStatus 'not_in_shortage' / 'never_checked' / 'closed' and report: null for an
+        order that exists but has nothing to report — only an unknown orderId is a 404.
+      responses:
+        '200':
+          description: SingleOrderShortageReport
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SingleOrderShortageReport' }
+        '404': { description: order not found }
+
+  /purchase-requisitions/generate:
+    post:
+      tags: [Purchase Requisitions]
+      summary: Generate a consolidated Purchase Requisition across every active order
+      description: >
+        Sums every non-Closed order's BOM requirement (via Module 5's snapshot service) per part,
+        nets the combined total against rm_inventory ONCE, and creates a Draft PR only if at least
+        one part has a net shortfall. Deliberately independent of Modules 6/7/8's per-order CTB
+        numbers — see README "Module 9" for why per-order shortage checks understate combined
+        demand.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                generatedBy: { type: string }
+      responses:
+        '200':
+          description: No shortfall across any active order — no PR created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GeneratePrResult' }
+        '201':
+          description: PR created with one or more line items.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GeneratePrResult' }
+
+  /purchase-requisitions:
+    get:
+      tags: [Purchase Requisitions]
+      summary: List purchase requisitions
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: status
+          in: query
+          schema: { type: string, enum: [Draft, Sent, Approved, Fulfilled, Cancelled] }
+      responses:
+        '200':
+          description: Paginated list of PurchaseRequisition (without nested lineItems/statusHistory)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/PurchaseRequisition' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+
+  /purchase-requisitions/{prId}:
+    parameters:
+      - name: prId
+        in: path
+        required: true
+        description: PurchaseRequisition.id (numeric primary key), not prNumber.
+        schema: { type: integer }
+    get:
+      tags: [Purchase Requisitions]
+      summary: Full PR detail with line items and status history
+      responses:
+        '200':
+          description: PurchaseRequisition
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PurchaseRequisition' }
+        '404': { description: prId not found }
+
+  /purchase-requisitions/{prId}/status:
+    parameters:
+      - name: prId
+        in: path
+        required: true
+        schema: { type: integer }
+    patch:
+      tags: [Purchase Requisitions]
+      summary: Transition a PR's status
+      description: >
+        Draft -> Sent -> Approved -> Fulfilled, strictly sequential. Cancelled is reachable only
+        from Draft or Sent — not from Approved or Fulfilled. The "Sent" transition logs normally
+        (no real procurement system exists to notify yet); the standard success text is returned
+        only in the response message, never simulated as a side effect.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newStatus]
+              properties:
+                newStatus: { type: string, enum: [Draft, Sent, Approved, Fulfilled, Cancelled] }
+                changedBy: { type: string }
+      responses:
+        '200':
+          description: Updated PurchaseRequisition plus a human-readable message
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  purchaseRequisition: { $ref: '#/components/schemas/PurchaseRequisition' }
+                  message: { type: string }
+        '400': { description: Invalid status transition }
+        '404': { description: prId not found }
+
+  /scheduling/run:
+    post:
+      tags: [Scheduling]
+      summary: Run a scheduling pass over every CTB-Clear, unscheduled, non-Closed order
+      description: >
+        Deterministic, rule-based baseline scheduler (greedy heuristic) — NOT the spec's future AI
+        Scheduling Optimizer. Sorts eligible orders by priority then due date and greedily assigns
+        each to the best available compatible line. dryRun: true returns the proposed result
+        without persisting anything; dryRun: false (default) creates production_schedule rows and
+        transitions each scheduled order from Open to Scheduled (reusing Module 2's
+        status-transition service). See README "Module 10" for the full capacity formula,
+        tie-break chain, and sequential line-availability algorithm.
+        Persistence is per-order, not one transaction across the whole batch: if one order's write
+        fails partway through, it's recorded in `failed` and the remaining orders in the batch are
+        still attempted — a single order's failure never aborts orders processed before or after
+        it. See README "Module 10: partial-failure handling".
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dryRun: { type: boolean, default: false }
+      responses:
+        '200':
+          description: RunSchedulingResult
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RunSchedulingResult' }
+
+  /scheduling/schedule:
+    get:
+      tags: [Scheduling]
+      summary: List the current schedule
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: lineId
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string, enum: [OnTrack, AtRisk] }
+        - name: startDateFrom
+          in: query
+          schema: { type: string, format: date }
+        - name: startDateTo
+          in: query
+          schema: { type: string, format: date }
+        - name: estEndDateFrom
+          in: query
+          schema: { type: string, format: date }
+        - name: estEndDateTo
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Paginated list of ProductionScheduleRow
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ProductionScheduleRow' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+
+  /scheduling/schedule/{orderId}:
+    parameters:
+      - name: orderId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Scheduling]
+      summary: Single order's schedule detail
+      responses:
+        '200':
+          description: ProductionScheduleRow
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductionScheduleRow' }
+        '404': { description: No schedule row exists for this order }
+    delete:
+      tags: [Scheduling]
+      summary: Un-schedule an order (explicit administrative reversal)
+      description: >
+        Deletes the production_schedule row and sets orders.status back to Open directly,
+        bypassing the normal forward-only transition validator on purpose — a backward move that
+        validator correctly refuses as a normal transition. Still writes a complete
+        order_status_history row (oldStatus: Scheduled, newStatus: Open) so the audit trail stays
+        intact. Only allowed while the order's status is exactly Scheduled. Meant to remain a rare,
+        deliberate admin action — see README "Module 10", Design decision #2.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, description: Stored in the order_status_history row's new notes column. }
+                changedBy: { type: string }
+      responses:
+        '200': { description: Un-scheduled successfully }
+        '400': { description: "Order status is not 'Scheduled' — cannot un-schedule" }
+        '404': { description: No schedule row exists for this order }
+
+  /risk/at-risk-orders:
+    get:
+      tags: [Risk]
+      summary: List all currently At-Risk orders
+      description: >
+        Reads Module 10's already-computed production_schedule.status/slackDays directly — never
+        recomputes them. Sorted by slackDays ascending (most negative / worst first) by default.
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: priority
+          in: query
+          schema: { type: string, enum: [Low, Medium, High] }
+        - name: lineId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Paginated list of AtRiskOrderRow
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/AtRiskOrderRow' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+
+  /risk/at-risk-orders/{orderId}/recommendations:
+    parameters:
+      - name: orderId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Risk]
+      summary: Compute Overtime / Extended Shift / Additional Line recommendations for one order
+      description: >
+        200 with reportStatus 'not_scheduled' / 'not_at_risk' and recommendations: null for an
+        order that exists but has no schedule row, or whose schedule is On Track — only an unknown
+        orderId is a 404. See README "Module 11" for the full framing of these as planning
+        estimates, not guaranteed outcomes.
+      responses:
+        '200':
+          description: AtRiskRecommendationsReport
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AtRiskRecommendationsReport' }
+        '404': { description: order not found }
+
+  /risk/summary:
+    get:
+      tags: [Risk]
+      summary: Quick At-Risk / On-Track counts, computed from the same production_schedule data as /risk/at-risk-orders
+      responses:
+        '200':
+          description: RiskSummary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RiskSummary' }
+
+  /search:
+    get:
+      tags: [Search]
+      summary: Unified instant search across Orders, Products, and Lines
+      description: >
+        Trigram-similarity (pg_trgm) fuzzy/partial search, ranked exact-match > prefix-match >
+        similarity-score within each entity type, capped at `limit` per type. Order results always
+        return pendingQty: null with an explanatory note — see README "Module 12" (the pendingQty
+        gap) for why this is not fabricated.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Minimum 2 characters.
+          schema: { type: string, minLength: 2 }
+        - name: limit
+          in: query
+          description: Applies per entity type. Default 5, max 20.
+          schema: { type: integer, minimum: 1, maximum: 20, default: 5 }
+      responses:
+        '200':
+          description: SearchResponse
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SearchResponse' }
+        '400': { description: q is missing or shorter than 2 characters }
+
+  /qc/generate:
+    post:
+      tags: [QC]
+      summary: Batch-generate QC data (batch number, barcode value, serial range, testing plan) for newly Scheduled orders
+      description: >
+        Explicit, separately-triggered action — never an automatic side effect of
+        POST /api/scheduling/run. Finds every order with status Scheduled and no qc_batches row
+        yet. Per-order try/catch mirrors Module 10's partial-failure handling: one order's failure
+        never aborts the rest. A missing testing plan for the order's product type does not block
+        batch creation (testingPlanId is set to null) but is surfaced in `warnings`. See README
+        "Module 13" for the barcode-value-not-image scope and the sequence-based serial
+        reservation's documented small race window.
+      responses:
+        '200':
+          description: GenerateQcBatchesResult
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenerateQcBatchesResult' }
+
+  /qc/batches:
+    get:
+      tags: [QC]
+      summary: List QC batches
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: orderId
+          in: query
+          schema: { type: string }
+        - name: sku
+          in: query
+          schema: { type: string }
+        - name: batchNumber
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Paginated list of QcBatch
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/QcBatch' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+
+  /qc/batches/{batchNumber}:
+    parameters:
+      - name: batchNumber
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [QC]
+      summary: QC batch detail, including the linked order and testing plan
+      responses:
+        '200':
+          description: QcBatchDetail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QcBatchDetail' }
+        '404': { description: batchNumber not found }
+
+  /qc/testing-plans:
+    get:
+      tags: [Testing Plans]
+      summary: List testing plans
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: productType
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Paginated list of TestingPlan
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/TestingPlan' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+    post:
+      tags: [Testing Plans]
+      summary: Create a testing plan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productType, planName]
+              properties:
+                productType: { type: string }
+                planName: { type: string }
+                description: { type: string }
+      responses:
+        '201':
+          description: Created TestingPlan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TestingPlan' }
+        '409': { description: productType already has a testing plan }
+
+  /qc/testing-plans/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [Testing Plans]
+      summary: Get a testing plan by id
+      responses:
+        '200':
+          description: TestingPlan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TestingPlan' }
+        '404': { description: id not found }
+    patch:
+      tags: [Testing Plans]
+      summary: Update a testing plan (partial body, at least one field required)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                productType: { type: string }
+                planName: { type: string }
+                description: { type: string, nullable: true }
+      responses:
+        '200':
+          description: Updated TestingPlan
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TestingPlan' }
+        '400': { description: No fields provided }
+        '404': { description: id not found }
+        '409': { description: productType already has a different testing plan }
+    delete:
+      tags: [Testing Plans]
+      summary: Delete a testing plan
+      description: Hard delete — qc_batches rows referencing this plan have testingPlanId set to null, not blocked.
+      responses:
+        '200': { description: Deleted successfully }
+        '404': { description: id not found }
+
+  /dashboard/production:
+    get:
+      tags: [Dashboard]
+      summary: Output over time, grouped by period
+      parameters:
+        - name: period
+          in: query
+          required: true
+          schema: { type: string, enum: [daily, weekly, monthly] }
+        - name: dateFrom
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: dateTo
+          in: query
+          required: true
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Array of ProductionPeriodRow
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ProductionPeriodRow' }
+        '400': { description: Missing/invalid period or date range }
+
+  /dashboard/planning:
+    get:
+      tags: [Dashboard]
+      summary: Scheduling health (current-state snapshot, no date range)
+      responses:
+        '200':
+          description: PlanningHealth
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlanningHealth' }
+
+  /dashboard/materials:
+    get:
+      tags: [Dashboard]
+      summary: Material health (current-state snapshot, no date range)
+      responses:
+        '200':
+          description: MaterialsHealth
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MaterialsHealth' }
+
+  /dashboard/management:
+    get:
+      tags: [Dashboard]
+      summary: The four management metrics (OEE, Capacity Utilization, Production Efficiency, Delivery Performance)
+      description: >
+        See README "Module 14" for the precise definitions — OEE and Capacity Utilization are the
+        same underlying number as Module 4's oeePct/performancePct, surfaced under a different
+        label; Production Efficiency and Delivery Performance are genuinely different metrics.
+      parameters:
+        - name: dateFrom
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: dateTo
+          in: query
+          required: true
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: ManagementMetrics
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ManagementMetrics' }
+        '400': { description: Missing/invalid date range }
+
+  /dashboard/overview:
+    get:
+      tags: [Dashboard]
+      summary: All four dashboard sections composed in one call
+      description: >
+        Calls the same service functions as /production, /planning, /materials, and /management —
+        no duplicated logic. The production section always groups daily for this single-call view.
+      parameters:
+        - name: dateFrom
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: dateTo
+          in: query
+          required: true
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: DashboardOverview
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardOverview' }
+        '400': { description: Missing/invalid date range }

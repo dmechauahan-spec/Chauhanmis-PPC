@@ -1,0 +1,549 @@
+// ============================================================================
+// PPC Enterprise — Prisma schema
+// Ported 1:1 from the finalized Postgres SQL schema (see README "Assumptions"
+// for the handful of naming/serialization decisions made during the port).
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------------
+// ENUM TYPES
+// ----------------------------------------------------------------------------
+
+enum OrderPriority {
+  Low
+  Medium
+  High
+}
+
+enum OrderStatus {
+  Open
+  PendingRM     @map("Pending RM")
+  Scheduled
+  Running
+  QC
+  DispatchReady @map("Dispatch Ready")
+  Closed
+}
+
+enum ScheduleStatus {
+  OnTrack    @map("On Track")
+  AtRisk     @map("At Risk")
+  RMShortage @map("RM Shortage")
+}
+
+enum LineStatus {
+  Active
+  Offline
+}
+
+enum UomType {
+  Pcs
+  Set
+  Kg
+  Ltr
+  Mtr
+}
+
+// Module 6 (CTB). Enum, not a free-form string, to match how every other
+// status-like field in this schema is already modeled (OrderStatus,
+// ScheduleStatus, LineStatus) — see README "Module 6" for why this was
+// chosen over the plain `String?` suggested in the spec snippet.
+enum CtbStatus {
+  ClearToBuild @map("Clear To Build")
+  RmShortage   @map("RM Shortage")
+}
+
+// Module 9 (Purchase Requisition Automation).
+enum PrStatus {
+  Draft
+  Sent
+  Approved
+  Fulfilled
+  Cancelled
+}
+
+// ============================================================================
+// 1. MODEL MASTER
+// ============================================================================
+model Product {
+  modelId           String   @id @map("model_id")
+  modelName         String   @map("model_name")
+  productType       String   @map("product_type")
+  sku               String   @unique
+  taktTimeSec       Decimal  @map("takt_time_sec") @db.Decimal(10, 2)
+  manpowerRequired  Int      @map("manpower_required")
+  noOfStations      Int      @map("no_of_stations")
+  changeoverTimeMin Decimal? @map("changeover_time_min") @db.Decimal(10, 2)
+  notes             String?
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at")
+
+  bomComponents BomComponent[]
+  orders        Order[]
+  dailyLogs     DailyProductionLog[]
+
+  @@index([productType])
+  @@map("products")
+}
+
+// ============================================================================
+// 2. RM INVENTORY
+// ============================================================================
+model RmInventory {
+  partId    String   @id @map("part_id")
+  stock     Decimal  @default(0) @db.Decimal(12, 2)
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  // Module 7 (Material Dashboard). Null = no threshold set for this part,
+  // which deliberately means "never appears in the critical list" — see
+  // README "Module 7" for why no global default is guessed.
+  criticalThreshold Decimal? @map("critical_threshold") @db.Decimal(12, 2)
+
+  bomComponents BomComponent[]
+  transactions  RmTransaction[]
+
+  @@map("rm_inventory")
+}
+
+// ============================================================================
+// 3. BOM MASTER
+// ============================================================================
+model BomComponent {
+  id         BigInt   @id @default(autoincrement())
+  modelRef   String   @map("model_ref")
+  uom        UomType  @default(Pcs)
+  partName   String   @map("part_name")
+  qtyPerUnit Decimal  @default(1) @map("qty_per_unit") @db.Decimal(10, 3)
+  partId     String?  @map("part_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  product     Product      @relation(fields: [modelRef], references: [sku])
+  rmInventory RmInventory? @relation(fields: [partId], references: [partId])
+
+  @@index([modelRef])
+  @@index([partName])
+  @@map("bom_components")
+}
+
+// ============================================================================
+// 4. LINES
+// ============================================================================
+model ProductionLine {
+  lineId        String     @id @map("line_id")
+  lineName      String     @map("line_name")
+  maxWorkers    Int        @map("max_workers")
+  efficiencyPct Decimal    @map("efficiency_pct") @db.Decimal(5, 2)
+  status        LineStatus @default(Active)
+  notes         String?
+  capPerDay     Decimal?   @map("cap_per_day") @db.Decimal(10, 2)
+
+  compatibility LineProductCompatibility[]
+  hrTeams       HrTeam[]
+  schedules     ProductionSchedule[]
+  dailyLogs     DailyProductionLog[]
+
+  @@map("production_lines")
+}
+
+model LineProductCompatibility {
+  lineId      String @map("line_id")
+  productType String @map("product_type")
+
+  line ProductionLine @relation(fields: [lineId], references: [lineId], onDelete: Cascade)
+
+  @@id([lineId, productType])
+  @@map("line_product_compatibility")
+}
+
+// ============================================================================
+// 5. HR
+// ============================================================================
+model HrTeam {
+  teamId        String   @id @map("team_id")
+  teamName      String   @map("team_name")
+  lineId        String?  @map("line_id")
+  workers       Int
+  skill         String?
+  attendancePct Decimal? @map("attendance_pct") @db.Decimal(5, 2)
+  shift         String?
+  notes         String?
+
+  line ProductionLine? @relation(fields: [lineId], references: [lineId])
+
+  @@map("hr_teams")
+}
+
+// ============================================================================
+// 6. HISTORY (monthly rollup)
+// ============================================================================
+model ProductionHistory {
+  id             BigInt   @id @default(autoincrement())
+  month          String
+  year           Int
+  plannedQty     Decimal? @map("planned_qty") @db.Decimal(12, 2)
+  actualQty      Decimal? @map("actual_qty") @db.Decimal(12, 2)
+  achievementPct Decimal? @map("achievement_pct") @db.Decimal(5, 2)
+  downtimePct    Decimal? @map("downtime_pct") @db.Decimal(5, 2)
+  notes          String?
+
+  @@unique([month, year])
+  @@map("production_history")
+}
+
+// ============================================================================
+// 7. ORDERS
+// ============================================================================
+model Order {
+  orderId   String        @id @map("order_id")
+  client    String
+  sku       String
+  product   String
+  qty       Int
+  dueDate   DateTime?     @map("due_date") @db.Date
+  priority  OrderPriority @default(Medium)
+  status    OrderStatus   @default(Open)
+  createdAt DateTime      @default(now()) @map("created_at")
+
+  // Module 6 (CTB). Both nullable: null/null means "never evaluated" —
+  // distinguished from a real evaluation via ctbCheckedAt, not a sentinel
+  // status value. See README "Module 6".
+  ctbStatus    CtbStatus? @map("ctb_status")
+  ctbCheckedAt DateTime?  @map("ctb_checked_at")
+
+  productRef      Product               @relation(fields: [sku], references: [sku])
+  statusHistory   OrderStatusHistory[]
+  schedules       ProductionSchedule[]
+  bomRequirements OrderBomRequirement[]
+  ctbShortages    OrderCtbShortage[]
+  qcBatch         QcBatch?
+
+  @@index([status])
+  @@index([sku])
+  @@index([dueDate])
+  @@map("orders")
+}
+
+model OrderStatusHistory {
+  id        BigInt       @id @default(autoincrement())
+  orderId   String       @map("order_id")
+  oldStatus OrderStatus? @map("old_status")
+  newStatus OrderStatus  @map("new_status")
+  changedBy String?      @map("changed_by")
+  changedAt DateTime     @default(now()) @map("changed_at")
+  // Added for Module 10's un-schedule reversal (DELETE
+  // /api/scheduling/schedule/:orderId): the original schema had no place to
+  // record why a status change happened, only who and when. Nullable and
+  // additive — every prior history row simply has notes: null.
+  notes     String?
+
+  order Order @relation(fields: [orderId], references: [orderId], onDelete: Cascade)
+
+  @@map("order_status_history")
+}
+
+// ============================================================================
+// 8. SCHEDULE
+// ============================================================================
+model ProductionSchedule {
+  id              BigInt         @id @default(autoincrement())
+  // Made unique for Module 10: the scheduling engine's eligibility rule
+  // ("no existing production_schedule row yet") and GET
+  // /api/scheduling/schedule/:orderId (a single-row-per-order lookup) both
+  // assume one schedule row per order — this constraint enforces that
+  // invariant at the DB level instead of only by convention.
+  orderId         String         @unique @map("order_id")
+  client          String
+  sku             String
+  product         String
+  qty             Int
+  lineId          String?        @map("line_id")
+  lineName        String?        @map("line_name")
+  dailyOutput     Decimal?       @map("daily_output") @db.Decimal(10, 2)
+  workersPresent  Int?           @map("workers_present")
+  workersRequired Int?           @map("workers_required")
+  shiftMode       String?        @map("shift_mode")
+  daysNeeded      Decimal?       @map("days_needed") @db.Decimal(6, 2)
+  startDate       DateTime?      @map("start_date") @db.Date
+  estEndDate      DateTime?      @map("est_end_date") @db.Date
+  dueDate         DateTime?      @map("due_date") @db.Date
+  slackDays       Int?           @map("slack_days")
+  status          ScheduleStatus @default(OnTrack)
+  createdAt       DateTime       @default(now()) @map("created_at")
+
+  order Order           @relation(fields: [orderId], references: [orderId], onDelete: Cascade)
+  line  ProductionLine? @relation(fields: [lineId], references: [lineId])
+
+  @@index([status])
+  @@index([lineId])
+  @@map("production_schedule")
+}
+
+// ============================================================================
+// 9. DAILY LOG
+// ============================================================================
+model DailyProductionLog {
+  logId              String   @id @map("log_id")
+  logDate            DateTime @map("log_date") @db.Date
+  shift              String?
+  lineId             String?  @map("line_id")
+  lineName           String?  @map("line_name")
+  activeLinesCount   Int?     @map("active_lines_count")
+  modelId            String?  @map("model_id")
+  modelName          String?  @map("model_name")
+  totalEmployees     Int?     @map("total_employees")
+  presentEmployees   Int?     @map("present_employees")
+  absentEmployees    Int?     @map("absent_employees")
+  attendancePct      Decimal? @map("attendance_pct") @db.Decimal(5, 2)
+  taktTimeOverride   Decimal? @map("takt_time_override") @db.Decimal(10, 2)
+  manpowerOverride   Int?     @map("manpower_override")
+  notes              String?
+  // Station-wise worker assignment, e.g. {"Element": ["ajit","suresh"], "Pully": ["karan","arjun"]}
+  stationAssignments Json?    @map("station_assignments")
+  savedBy            String?  @map("saved_by")
+  savedAt            DateTime @default(now()) @map("saved_at")
+
+  // Added for Module 4 (OEE). The original sheet-derived Daily Log never
+  // captured output quantity, so Performance%/Quality% had no data to work
+  // from — see README "Schema gap" note. Purely additive, nullable so
+  // pre-Module-4 rows and any client not yet aware of them are unaffected.
+  plannedMinutes Decimal? @map("planned_minutes") @db.Decimal(10, 2)
+  totalOutputQty Decimal? @map("total_output_qty") @db.Decimal(12, 2)
+  goodQty        Decimal? @map("good_qty") @db.Decimal(12, 2)
+
+  line         ProductionLine? @relation(fields: [lineId], references: [lineId])
+  model        Product?        @relation(fields: [modelId], references: [modelId])
+  downtimeLogs DowntimeLog[]
+
+  @@index([logDate])
+  @@index([lineId])
+  @@index([modelId])
+  @@map("daily_production_log")
+}
+
+model DowntimeLog {
+  id      BigInt  @id @default(autoincrement())
+  logId   String  @map("log_id")
+  reason  String
+  minutes Decimal @db.Decimal(10, 2)
+  notes   String?
+
+  dailyLog DailyProductionLog @relation(fields: [logId], references: [logId], onDelete: Cascade)
+
+  @@map("downtime_log")
+}
+
+// ============================================================================
+// 10. MANPOWER FORECAST
+// ============================================================================
+model ManpowerForecast {
+  forecastDate DateTime @id @map("forecast_date") @db.Date
+  day          String?
+  headcount    Int?
+  notes        String?
+
+  @@map("manpower_forecast")
+}
+
+// ============================================================================
+// RM STOCK LEDGER (added for Module 1 adjust-stock endpoint — not present in
+// the original sheet-derived SQL, called out explicitly as needed in the spec)
+// ============================================================================
+model RmTransaction {
+  id        BigInt   @id @default(autoincrement())
+  partId    String   @map("part_id")
+  delta     Decimal  @db.Decimal(12, 2)
+  reason    String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  rmInventory RmInventory @relation(fields: [partId], references: [partId], onDelete: Cascade)
+
+  @@index([partId])
+  @@map("rm_transactions")
+}
+
+// ============================================================================
+// MODULE 5 — BOM EXPLOSION (materialized cache of an order's exploded
+// requirements; see README "Module 5 — BOM Explosion Engine")
+// ============================================================================
+model OrderBomRequirement {
+  id          BigInt   @id @default(autoincrement())
+  orderId     String   @map("order_id")
+  partId      String?  @map("part_id")
+  partName    String   @map("part_name")
+  qtyPerUnit  Decimal  @map("qty_per_unit") @db.Decimal(10, 3)
+  requiredQty Decimal  @map("required_qty") @db.Decimal(12, 3)
+  computedAt  DateTime @default(now()) @map("computed_at")
+
+  order Order @relation(fields: [orderId], references: [orderId], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("order_bom_requirements")
+}
+
+// ============================================================================
+// MODULE 6 — CTB (materialized per-part shortage breakdown for the last
+// live CTB evaluation of an order; see README "Module 6 — CTB Engine" for
+// why this table exists beyond the ctbStatus/ctbCheckedAt columns the spec
+// asked for — it's what lets the dashboard endpoint show shortages without
+// re-evaluating every order on every call).
+// ============================================================================
+model OrderCtbShortage {
+  id             BigInt   @id @default(autoincrement())
+  orderId        String   @map("order_id")
+  partId         String?  @map("part_id")
+  partName       String   @map("part_name")
+  requiredQty    Decimal  @map("required_qty") @db.Decimal(12, 3)
+  availableStock Decimal  @map("available_stock") @db.Decimal(12, 3)
+  shortQty       Decimal  @map("short_qty") @db.Decimal(12, 3)
+  evaluatedAt    DateTime @default(now()) @map("evaluated_at")
+
+  order Order @relation(fields: [orderId], references: [orderId], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("order_ctb_shortages")
+}
+
+// ============================================================================
+// MODULE 9 — PURCHASE REQUISITION AUTOMATION (consolidated net purchase
+// requirement across ALL active orders at once; see README "Module 9" for
+// why this deliberately recomputes demand instead of reusing Modules 6/7/8's
+// per-order shortage numbers).
+// ============================================================================
+model PurchaseRequisition {
+  id            BigInt            @id @default(autoincrement())
+  prNumber      String            @unique @map("pr_number")
+  status        PrStatus          @default(Draft)
+  generatedBy   String?           @map("generated_by")
+  generatedAt   DateTime          @default(now()) @map("generated_at")
+  notes         String?
+  lineItems     PrLineItem[]
+  statusHistory PrStatusHistory[]
+
+  @@index([status])
+  @@map("purchase_requisitions")
+}
+
+model PrLineItem {
+  id                BigInt   @id @default(autoincrement())
+  prId              BigInt   @map("pr_id")
+  partId            String?  @map("part_id")
+  partName          String   @map("part_name")
+  totalRequiredQty  Decimal  @map("total_required_qty") @db.Decimal(12, 3)
+  currentStockQty   Decimal  @map("current_stock_qty") @db.Decimal(12, 3)
+  netRequirementQty Decimal  @map("net_requirement_qty") @db.Decimal(12, 3)
+
+  pr PurchaseRequisition @relation(fields: [prId], references: [id], onDelete: Cascade)
+
+  @@index([prId])
+  @@map("pr_line_items")
+}
+
+model PrStatusHistory {
+  id        BigInt    @id @default(autoincrement())
+  prId      BigInt    @map("pr_id")
+  oldStatus PrStatus? @map("old_status")
+  newStatus PrStatus  @map("new_status")
+  changedBy String?   @map("changed_by")
+  changedAt DateTime  @default(now()) @map("changed_at")
+
+  pr PurchaseRequisition @relation(fields: [prId], references: [id], onDelete: Cascade)
+
+  @@index([prId])
+  @@map("pr_status_history")
+}
+
+// ============================================================================
+// MODULE 13 — QC PLANNING INTEGRATION (generation/storage of the QC batch
+// data an external PRO_QC system would eventually consume; see README
+// "Module 13" — there is no real external system yet, so this is the
+// generation + storage half only).
+// ============================================================================
+model TestingPlan {
+  id          BigInt    @id @default(autoincrement())
+  productType String    @unique @map("product_type")
+  planName    String    @map("plan_name")
+  description String?
+  qcBatches   QcBatch[]
+
+  @@map("testing_plans")
+}
+
+model QcBatch {
+  id               BigInt   @id @default(autoincrement())
+  orderId          String   @unique @map("order_id")
+  sku              String
+  batchNumber      String   @unique @map("batch_number")
+  barcodeValue     String   @map("barcode_value")
+  serialRangeStart BigInt   @map("serial_range_start")
+  serialRangeEnd   BigInt   @map("serial_range_end")
+  testingPlanId    BigInt?  @map("testing_plan_id")
+  generatedAt      DateTime @default(now()) @map("generated_at")
+
+  order       Order        @relation(fields: [orderId], references: [orderId], onDelete: Cascade)
+  testingPlan TestingPlan? @relation(fields: [testingPlanId], references: [id])
+
+  @@map("qc_batches")
+}
+
+// ============================================================================
+// AUTHENTICATION & ROLE-BASED AUTHORIZATION (cross-cutting retrofit — see
+// README "Authentication & Authorization" for the role model, the full
+// permission matrix, and the JWT/no-refresh-token simplification).
+// ============================================================================
+enum UserRole {
+  Admin
+  StoreManager
+  ProductionManager
+}
+
+model User {
+  id                 BigInt   @id @default(autoincrement())
+  email              String   @unique
+  passwordHash       String   @map("password_hash")
+  name               String
+  role               UserRole
+  isActive           Boolean  @default(true) @map("is_active")
+  // Self-service "Forgot Password" identity check — see
+  // README "Self-Service Password Reset". Both required: every user must
+  // have a real one before self-service reset works for them. Existing
+  // (pre-migration) users are backfilled with the sentinel
+  // SECURITY_QUESTION_NOT_SET, which the forgot-password flow explicitly
+  // detects and rejects with a message pointing at an Admin fixing it via
+  // PATCH /api/auth/users/:userId, rather than silently failing.
+  securityQuestion   String   @map("security_question")
+  securityAnswerHash String   @map("security_answer_hash")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  passwordResetTokens PasswordResetToken[]
+
+  @@map("users")
+}
+
+// Single-use, short-lived password-reset tokens issued by
+// POST /api/auth/forgot-password/verify and consumed by
+// POST /api/auth/forgot-password/reset. tokenHash is a SHA-256 digest of the
+// full signed reset-token JWT (not the password JWT itself, which is never
+// stored) — a fast hash is appropriate here (unlike bcrypt for passwords)
+// because the token is high-entropy, randomly generated, single-use, and
+// short-lived, not a low-entropy human-chosen secret. See README.
+model PasswordResetToken {
+  id        BigInt    @id @default(autoincrement())
+  userId    BigInt    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("password_reset_tokens")
+}

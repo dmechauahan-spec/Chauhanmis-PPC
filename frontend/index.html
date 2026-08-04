@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chauhanmis PPC</title>
+    <script>
+      // Applied before React mounts (and before first paint) so there's no
+      // flash of the wrong theme. Keep the storage key and fallback logic
+      // here in sync with src/lib/theme-context.tsx — this script can't
+      // import from src since it has to run before the bundle loads.
+      (function () {
+        var STORAGE_KEY = "ppc-theme";
+        var stored = localStorage.getItem(STORAGE_KEY);
+        var theme =
+          stored === "light" || stored === "dark"
+            ? stored
+            : window.matchMedia("(prefers-color-scheme: light)").matches
+              ? "light"
+              : "dark";
+        document.documentElement.setAttribute("data-theme", theme);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

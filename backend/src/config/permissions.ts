@@ -1,0 +1,45 @@
+import { UserRole } from '@prisma/client';
+
+// Single, central, auditable source of truth for who can read/write each
+// module — see README "Authentication & Authorization" for the full
+// permission-matrix table this mirrors exactly. Every module's routes.ts
+// imports its own entry here and applies `authenticate, authorize(...roles)`
+// consistently, rather than each file inventing/copy-pasting its own
+// allowed-roles array.
+//
+// Admin is NEVER listed in these arrays — the `authorize()` middleware
+// already lets Admin through regardless of the roles given, so every array
+// below only needs to name the OTHER role(s) allowed. An empty `write: []`
+// means "Admin only" for that action (every other role gets 403).
+
+const STORE_AND_PRODUCTION: UserRole[] = [UserRole.StoreManager, UserRole.ProductionManager];
+const STORE_ONLY: UserRole[] = [UserRole.StoreManager];
+const PRODUCTION_ONLY: UserRole[] = [UserRole.ProductionManager];
+const ADMIN_ONLY: UserRole[] = [];
+
+export const PERMISSIONS = {
+  // --- Material side (StoreManager's domain) ---
+  rmInventory: { read: STORE_AND_PRODUCTION, write: STORE_ONLY },
+  bom: { read: STORE_AND_PRODUCTION, write: STORE_ONLY },
+  bomExplosion: { read: STORE_AND_PRODUCTION, write: STORE_ONLY },
+  ctb: { read: STORE_AND_PRODUCTION, write: STORE_ONLY },
+  materials: { read: STORE_AND_PRODUCTION, write: STORE_ONLY },
+  purchaseRequisitions: { read: STORE_AND_PRODUCTION, write: STORE_ONLY },
+
+  // --- Floor side (ProductionManager's domain) ---
+  orders: { read: STORE_AND_PRODUCTION, write: PRODUCTION_ONLY },
+  dailyLogs: { read: STORE_AND_PRODUCTION, write: PRODUCTION_ONLY },
+  oee: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // read-only module — write unused (no write routes exist)
+  scheduling: { read: STORE_AND_PRODUCTION, write: PRODUCTION_ONLY },
+  risk: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // read-only module — write unused
+  qcBatches: { read: STORE_AND_PRODUCTION, write: PRODUCTION_ONLY },
+  qcTestingPlans: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // master data, not a floor action
+  hrTeams: { read: STORE_AND_PRODUCTION, write: PRODUCTION_ONLY },
+
+  // --- Shared master data / cross-cutting (both roles read, only Admin writes) ---
+  products: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY },
+  lines: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // physical line config/engineering setup, not a day-to-day floor action — see README
+  shortageReport: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // read-only module — write unused
+  search: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // read-only module — write unused
+  dashboard: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // read-only module — write unused
+} as const;
