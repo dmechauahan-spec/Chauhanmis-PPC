@@ -8,9 +8,10 @@ import authRouter from './auth.routes';
 import { LOGIN_RATE_LIMIT_MAX_ATTEMPTS } from './loginRateLimiter';
 
 // A dedicated file (rather than folded into auth.test.ts) so this suite's
-// own module registry — and therefore its own express-rate-limit in-memory
-// store — is isolated from every other test file's login traffic. See
-// README "Security Hardening (Post-Audit)".
+// own module registry — and therefore its own FakeRatelimit in-memory
+// counter (see testUtils/setupEnv.ts, mocked globally for the whole suite)
+// — is isolated from every other test file's login traffic. See README
+// "Security Hardening (Post-Audit)".
 const app = buildTestApp('/api/auth', authRouter);
 const TEST_PASSWORD = 'Test-Password-123!';
 
@@ -35,10 +36,10 @@ describe('POST /api/auth/login rate limiting', () => {
         .send({ email: user.email, password: TEST_PASSWORD });
       expect(first.status).toBe(200);
 
-      // Consume the rest of the window's budget. express-rate-limit counts
-      // every request to the route by default, not just failed ones, so a
-      // wrong password is a fine way to fill the remaining budget without
-      // needing more real users.
+      // Consume the rest of the window's budget. The limiter counts every
+      // request to the route by default, not just failed ones, so a wrong
+      // password is a fine way to fill the remaining budget without needing
+      // more real users.
       for (let i = 0; i < LOGIN_RATE_LIMIT_MAX_ATTEMPTS - 1; i++) {
         const res = await request(app)
           .post('/api/auth/login')

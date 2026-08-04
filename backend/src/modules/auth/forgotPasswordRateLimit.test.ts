@@ -8,9 +8,9 @@ import authRouter from './auth.routes';
 import { FORGOT_PASSWORD_RATE_LIMIT_MAX_ATTEMPTS } from './forgotPasswordRateLimiter';
 
 // A dedicated file, same reasoning as loginRateLimit.test.ts: its own module
-// registry gives this suite its own express-rate-limit in-memory store,
-// isolated from auth.forgotPassword.test.ts's functional traffic against the
-// same route.
+// registry gives this suite its own FakeRatelimit in-memory counter (see
+// testUtils/setupEnv.ts, mocked globally for the whole suite), isolated from
+// auth.forgotPassword.test.ts's functional traffic against the same route.
 const app = buildTestApp('/api/auth', authRouter);
 
 let user: TestUser;

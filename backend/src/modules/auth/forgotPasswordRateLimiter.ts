@@ -1,5 +1,4 @@
-import { rateLimit } from 'express-rate-limit';
-import { TooManyRequestsError } from '../../utils/errors';
+import { createRateLimitMiddleware } from '../../lib/rateLimiter';
 
 // Same rationale and same numbers as loginRateLimiter.ts — this endpoint is
 // exactly the kind of thing brute-force protection exists for (guessing a
@@ -9,12 +8,9 @@ import { TooManyRequestsError } from '../../utils/errors';
 export const FORGOT_PASSWORD_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 export const FORGOT_PASSWORD_RATE_LIMIT_MAX_ATTEMPTS = 10; // per IP, per window
 
-export const forgotPasswordRateLimiter = rateLimit({
+export const forgotPasswordRateLimiter = createRateLimitMiddleware({
   windowMs: FORGOT_PASSWORD_RATE_LIMIT_WINDOW_MS,
-  limit: FORGOT_PASSWORD_RATE_LIMIT_MAX_ATTEMPTS,
-  standardHeaders: true,
-  legacyHeaders: false,
-  handler: (_req, _res, next) => {
-    next(new TooManyRequestsError('Too many password reset attempts. Please try again later.'));
-  },
+  maxAttempts: FORGOT_PASSWORD_RATE_LIMIT_MAX_ATTEMPTS,
+  prefix: 'ratelimit:forgot-password',
+  message: 'Too many password reset attempts. Please try again later.',
 });

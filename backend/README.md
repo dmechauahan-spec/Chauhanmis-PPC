@@ -305,19 +305,28 @@ vulnerabilities, and secrets hygiene. Five findings were prioritized and fixed h
 
 **1. (High) Brute-force protection on login.** `POST /api/auth/login` had no rate limiting — an
 attacker could try unlimited passwords against any known email. `src/modules/auth/loginRateLimiter.ts`
-adds `express-rate-limit`, scoped to that one route: `LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 10` per
-`LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000` (15 minutes), **keyed by IP only** (the package's
-default `keyGenerator`). Exceeding it returns `429` through a `handler` that calls
-`next(new TooManyRequestsError())`, so the response goes through the same centralized `errorHandler`
-and `{ success: false, error: { message } }` envelope as every other error in this API, not
-`express-rate-limit`'s own default response shape.
+(via the shared `src/lib/rateLimiter.ts`) rate-limits that one route: `LOGIN_RATE_LIMIT_MAX_ATTEMPTS
+= 10` per `LOGIN_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000` (15 minutes), **keyed by IP only**. Exceeding
+it returns `429` via `next(new TooManyRequestsError())`, so the response goes through the same
+centralized `errorHandler` and `{ success: false, error: { message } }` envelope as every other error
+in this API.
   - *Why per-IP-only, not per-IP-plus-email:* this is an internal factory tool with a small, known
     user base, not a public consumer app — per-IP is a reasonable, simple starting point. The
     tradeoff: many users behind the same office/NAT IP share one budget, and an attacker spraying
     failed attempts against one victim's specific email from many different IPs isn't slowed by this
     alone. **Flagged for later, not fixed now:** if the user base or internet-facing exposure grows,
-    a combined IP+email key (via `express-rate-limit`'s `ipKeyGenerator` helper) or a per-account
-    lockout counter would close that gap.
+    a combined IP+email key or a per-account lockout counter would close that gap.
+  - *Originally `express-rate-limit`'s in-memory store, since migrated to Upstash Redis:* an
+    in-memory counter only works when the process stays alive between requests. On Vercel's
+    serverless model, each invocation can land on a different, short-lived function instance with
+    nothing shared in process memory, so the in-memory counter would silently reset constantly and
+    this protection would stop working in production without any error or warning. `src/lib/
+    rateLimiter.ts` now backs both this and the forgot-password limiter below with
+    `@upstash/ratelimit` + `@upstash/redis` (REST-based, no persistent TCP connection — a purpose
+    fit for serverless/edge, unlike `rate-limit-redis`/`ioredis`), using the exact same window/max
+    numbers and per-IP keying as before — only the storage mechanism changed, not the policy. See
+    "Deploying to Vercel" below for the required `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN`
+    environment variables.
 
 **2. (Medium) `JWT_SECRET` strength validation at startup.** Previously only checked non-empty
 (`.min(1)`) — a one-character secret booted the app with no warning. `src/config/env.ts` now
@@ -1706,3 +1715,87 @@ actually finished, which is what "did we deliver on time" is really asking about
 
 `openapi.yaml` covers every route in this phase and can be imported directly into Postman or
 Insomnia.
+
+## Deploying to Vercel
+
+This backend deploys to Vercel as a single serverless Express function: `api/index.ts` imports
+`createApp()` from `src/app.ts` and default-exports the resulting Express app (Vercel's Node.js
+runtime accepts a default-exported Express app directly — an Express app is itself a callable
+`(req, res)` handler, no `serverless-http` wrapper needed), and `vercel.json` rewrites every
+incoming path to it. `createApp()` runs once per cold start, so the `src/db/client.ts` Prisma
+singleton it wires up is created once and reused for every request a warm function instance
+handles.
+
+### ⚠️ Use Neon's *pooled* connection string, not the direct one
+
+**Production `DATABASE_URL` must be Neon's pooled connection string** — the one with `-pooler` in
+the hostname, found in the Neon dashboard's connection details (e.g.
+`postgresql://user:pass@ep-xxx-pooler.region.aws.neon.tech/db?sslmode=require`). This matters far
+more here than it would for a traditional long-running server: many concurrent Vercel function
+instances can each try to open a database connection, and Neon's direct connection string has no
+pooling in front of it — a burst of concurrent invocations could exhaust Postgres's own connection
+limit. Neon's pooler (PgBouncer-based) is what makes that safe. **Using the direct connection
+string in production is a real outage risk under load, not just a performance tweak.**
+
+This is a values-only change — an environment variable you set in Vercel's dashboard, not a code
+change. While you're there, also append `&pgbouncer=true` to the pooled connection string (Prisma's
+own recommendation when connecting through PgBouncer in transaction-pooling mode, which is what
+Neon's pooler uses) — without it, Prisma's prepared-statement caching can intermittently collide
+across the many short-lived connections a serverless deploy opens.
+
+### Running migrations: manual, deliberately not automatic
+
+`prisma migrate deploy` is **not** run automatically on every build/deploy. This is a deliberate
+safety choice — schema migrations should be a conscious, separate action, not something that fires
+on every push just because the build script happened to run. Instead:
+
+1. Deploy the new code (build/push as normal).
+2. Separately, run `npx prisma migrate deploy` yourself against the production `DATABASE_URL` (the
+   pooled one above) whenever a deploy includes a schema change — before or after the code deploy,
+   whichever order the specific change requires (e.g. an additive column can go either way; a
+   column removal that old code still reads from must happen after the old code is gone).
+
+Be careful with this going forward: it's easy to forget the manual migration step once deploys feel
+routine. A deploy that depends on a schema change but skips this step will fail at runtime, not at
+build time.
+
+The build command itself (`"build": "prisma generate && tsc -p tsconfig.json"` in `package.json`)
+only runs `prisma generate` — regenerating the Prisma Client from `schema.prisma` so the generated
+client exists at build time, which a serverless deploy requires. It does not touch the database.
+
+### Required Vercel environment variables
+
+Set these in the Vercel dashboard (Project Settings → Environment Variables) for the Production
+environment:
+
+| Variable | Notes |
+| --- | --- |
+| `DATABASE_URL` | Neon's **pooled** (`-pooler`) connection string — see above |
+| `JWT_SECRET` | At least 32 characters — generate a real random value, never reuse a local/dev one |
+| `ADMIN_SEED_EMAIL` | Bootstrap-only; only used if you run `prisma db seed` against production |
+| `ADMIN_SEED_PASSWORD` | Same — change it after first login, same as local setup |
+| `ADMIN_SEED_SECURITY_QUESTION` | Same — must be one of `SECURITY_QUESTIONS` in `securityQuestion.ts`, verbatim |
+| `ADMIN_SEED_SECURITY_ANSWER` | Same — change it after first login |
+| `UPSTASH_REDIS_REST_URL` | From the Upstash console's database "REST API" tab — the REST URL, not the TCP/Redis connection string |
+| `UPSTASH_REDIS_REST_TOKEN` | Same tab — the REST token |
+| `CORS_ALLOWED_ORIGINS` | See the chicken-and-egg note below |
+| `NODE_ENV` | `production` |
+
+`PORT`, `DATABASE_URL_TEST`, and `LOG_LEVEL` don't need to be set — `PORT` is irrelevant to a
+serverless function, `DATABASE_URL_TEST` is test-suite-only, and `LOG_LEVEL` defaults to `info`.
+
+### `CORS_ALLOWED_ORIGINS`: a chicken-and-egg step in deploy order
+
+The backend needs to go out before the frontend's Vercel URL exists (the frontend's build/deploy
+is what generates it), but `CORS_ALLOWED_ORIGINS` needs that URL to be set correctly — see README
+"Security Hardening (Post-Audit)" for why an unset value means `origin: false` (all cross-origin
+browser requests rejected) in production. The order in practice:
+
+1. Deploy the backend first with `CORS_ALLOWED_ORIGINS` left unset, or set to a placeholder —
+   accept that the frontend can't reach it cross-origin yet.
+2. Deploy the frontend; note its real Vercel URL (or custom domain, once attached).
+3. Update `CORS_ALLOWED_ORIGINS` on the backend's Vercel project to that real origin(s), then
+   redeploy (or use Vercel's "Redeploy" so the new env var takes effect) the backend.
+
+Don't leave step 3 undone — a permissive-for-now value should not become the permanent production
+setting.

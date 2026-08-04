@@ -4,6 +4,8 @@ import { envSchema } from './env';
 const VALID_BASE = {
   DATABASE_URL: 'postgresql://user:pass@localhost:5432/db',
   JWT_SECRET: 'a'.repeat(32),
+  UPSTASH_REDIS_REST_URL: 'https://example.upstash.io',
+  UPSTASH_REDIS_REST_TOKEN: 'test-token',
 };
 
 describe('envSchema — JWT_SECRET strength validation', () => {

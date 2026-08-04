@@ -33,6 +33,14 @@ export const envSchema = z.object({
   // and README "Security Hardening (Post-Audit)" for the fallback behavior
   // when this is unset.
   CORS_ALLOWED_ORIGINS: z.string().optional(),
+  // Upstash Redis (REST API, not a TCP connection) backing the login /
+  // forgot-password rate limiters — see src/lib/rateLimiter.ts. Required in
+  // every environment, same fail-fast pattern as JWT_SECRET: on Vercel's
+  // serverless model, express-rate-limit's in-memory store resets on every
+  // cold start, so brute-force protection has no fallback if this is
+  // missing — better to refuse to boot than to boot unprotected.
+  UPSTASH_REDIS_REST_URL: z.string().url('UPSTASH_REDIS_REST_URL must be a valid URL'),
+  UPSTASH_REDIS_REST_TOKEN: z.string().min(1, 'UPSTASH_REDIS_REST_TOKEN is required'),
 });
 
 const parsed = envSchema.safeParse(process.env);
