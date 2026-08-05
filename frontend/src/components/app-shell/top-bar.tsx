@@ -1,4 +1,4 @@
-import { LogOut, Moon, Sun, User } from "lucide-react";
+import { LogOut, Monitor, Moon, Sun, User } from "lucide-react";
 import { useAuth } from "@/features/auth/auth-context";
 import { SpotlightSearch } from "@/features/search/spotlight-search";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -8,26 +8,51 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ROLE_LABEL } from "@/lib/roles";
-import { useTheme } from "@/lib/theme-context";
+import { useTheme, type ThemePreference } from "@/lib/theme-context";
+
+// Icon + label per PREFERENCE (not per resolved theme) — the trigger shows
+// which of the three the user actually picked, e.g. still a monitor icon
+// while on System even if that currently resolves to dark. lucide's
+// Monitor stands in for "follow the OS" the same way Sun/Moon stand in for
+// Light/Dark.
+const PREFERENCE_OPTIONS: { value: ThemePreference; label: string; icon: typeof Sun }[] = [
+  { value: "light", label: "Light", icon: Sun },
+  { value: "dark", label: "Dark", icon: Moon },
+  { value: "system", label: "System", icon: Monitor },
+];
 
 function ThemeToggle() {
-  const { theme, toggleTheme } = useTheme();
-  const isDark = theme === "dark";
+  const { themePreference, setThemePreference } = useTheme();
+  const current = PREFERENCE_OPTIONS.find((o) => o.value === themePreference) ?? PREFERENCE_OPTIONS[0];
+  const CurrentIcon = current.icon;
 
   return (
-    <Button
-      variant="ghost"
-      size="icon"
-      onClick={toggleTheme}
-      aria-label={isDark ? "Switch to light theme" : "Switch to dark theme"}
-      title={isDark ? "Switch to light theme" : "Switch to dark theme"}
-    >
-      {isDark ? <Sun /> : <Moon />}
-    </Button>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" aria-label={`Theme: ${current.label}`} title={`Theme: ${current.label}`}>
+          <CurrentIcon />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-[8rem]">
+        <DropdownMenuRadioGroup
+          value={themePreference}
+          onValueChange={(value) => setThemePreference(value as ThemePreference)}
+        >
+          {PREFERENCE_OPTIONS.map(({ value, label, icon: Icon }) => (
+            <DropdownMenuRadioItem key={value} value={value}>
+              <Icon className="size-4 text-ink-muted" />
+              {label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

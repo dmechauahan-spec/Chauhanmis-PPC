@@ -9,15 +9,23 @@
       // flash of the wrong theme. Keep the storage key and fallback logic
       // here in sync with src/lib/theme-context.tsx — this script can't
       // import from src since it has to run before the bundle loads.
+      //
+      // Three stored states are possible now: 'light', 'dark', or 'system'
+      // (which resolves via the OS media query, same as theme-context.tsx
+      // does at runtime). A first-time visitor — nothing in storage at all
+      // — gets 'light' directly, with NO OS query in that case; only an
+      // explicit 'system' choice ever consults prefers-color-scheme here.
       (function () {
         var STORAGE_KEY = "ppc-theme";
         var stored = localStorage.getItem(STORAGE_KEY);
-        var theme =
-          stored === "light" || stored === "dark"
-            ? stored
-            : window.matchMedia("(prefers-color-scheme: light)").matches
-              ? "light"
-              : "dark";
+        var theme;
+        if (stored === "light" || stored === "dark") {
+          theme = stored;
+        } else if (stored === "system") {
+          theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        } else {
+          theme = "light";
+        }
         document.documentElement.setAttribute("data-theme", theme);
       })();
     </script>
