@@ -24,8 +24,11 @@ export function MiniBarChart({ data, height = 96, formatValue = String, ariaLabe
         const pct = Math.max(2, (point.value / max) * 100);
         return (
           <div key={i} className="group relative flex h-full flex-1 items-end">
+            {/* accent-teal, not status-info — a chart fill is decorative
+                data, not a state indicator, so it uses the secondary accent
+                (index.css) rather than a status color. */}
             <div
-              className="w-full rounded-t-sm bg-status-info/70 transition-colors group-hover:bg-status-info"
+              className="w-full rounded-t-sm bg-accent-teal/70 transition-colors group-hover:bg-accent-teal"
               style={{ height: `${pct}%` }}
             />
             <div

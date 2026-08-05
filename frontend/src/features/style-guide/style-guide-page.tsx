@@ -1,10 +1,12 @@
 import { PipelineStepper } from "@/components/pipeline-stepper";
+import { GaugeDial } from "@/components/gauge-dial";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@/components/ui/table";
 import { useTheme } from "@/lib/theme-context";
 import type { OrderStatus } from "@/lib/order-pipeline";
+import { KPI_THRESHOLDS } from "@/lib/kpi-thresholds";
 
 // Displayed values only (the swatches themselves paint via the live CSS
 // variables) — kept per-theme here so the printed hex next to each swatch
@@ -22,6 +24,8 @@ const SWATCHES: { name: string; className: string; dark: string; light: string }
   { name: "status-critical", className: "bg-status-critical", dark: "#E5484D", light: "#D62C31" },
   { name: "status-success", className: "bg-status-success", dark: "#3DD68C", light: "#198051" },
   { name: "status-info", className: "bg-status-info", dark: "#4C9FE8", light: "#2D74B4" },
+  { name: "gauge-caution", className: "bg-gauge-caution", dark: "#E0932E", light: "#A5620A" },
+  { name: "accent-teal", className: "bg-accent-teal", dark: "#4FA8A0", light: "#1F7A72" },
 ];
 
 const SAMPLE_ORDERS: { orderId: string; sku: string; qty: number; dueDate: string; status: OrderStatus }[] = [
@@ -149,6 +153,38 @@ export function StyleGuidePage() {
                   <PipelineStepper currentStage={stage} size="compact" className="max-w-40" />
                 </div>
               ))}
+            </CardContent>
+          </Card>
+        </div>
+      </Section>
+
+      <Section title="Gauge dial — hero metric visualization">
+        <div className="flex flex-col gap-5">
+          <Card>
+            <CardHeader>
+              <CardTitle>Hero size — every zone + no-data</CardTitle>
+              <CardDescription>Zone boundaries come straight from kpi-thresholds.ts's OEE band (goodAt 75, criticalBelow 50) — nothing invented here.</CardDescription>
+            </CardHeader>
+            <CardContent className="grid grid-cols-2 gap-6 sm:grid-cols-3 lg:grid-cols-5">
+              <GaugeDial label="0% — critical" value={0} thresholds={KPI_THRESHOLDS.oee} size="hero" contributingLabel="3 logs" />
+              <GaugeDial label="30% — critical" value={30} thresholds={KPI_THRESHOLDS.oee} size="hero" contributingLabel="3 logs" />
+              <GaugeDial label="60% — caution" value={60} thresholds={KPI_THRESHOLDS.oee} size="hero" contributingLabel="3 logs" />
+              <GaugeDial label="90% — success" value={90} thresholds={KPI_THRESHOLDS.oee} size="hero" contributingLabel="3 logs" />
+              <GaugeDial label="100% — success" value={100} thresholds={KPI_THRESHOLDS.oee} size="hero" contributingLabel="3 logs" />
+              <GaugeDial label="No data" value={null} thresholds={KPI_THRESHOLDS.oee} size="hero" emptyReason="No production logs in this range" />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Secondary size — the visible size step down from hero</CardTitle>
+              <CardDescription>Same component, size=&quot;sm&quot; — this is what establishes real hierarchy on the dashboard instead of four identical-size cards.</CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-wrap gap-6">
+              <GaugeDial label="Capacity Utilization" value={57.3} thresholds={KPI_THRESHOLDS.capacityUtilization} size="sm" contributingLabel="3 logs" />
+              <GaugeDial label="Production Efficiency" value={88.5} thresholds={KPI_THRESHOLDS.productionEfficiency} size="sm" contributingLabel="1 line" />
+              <GaugeDial label="Delivery Performance" value={100} thresholds={KPI_THRESHOLDS.deliveryPerformance} size="sm" contributingLabel="1 order" />
+              <GaugeDial label="No data" value={null} thresholds={KPI_THRESHOLDS.capacityUtilization} size="sm" emptyReason="No output data" />
             </CardContent>
           </Card>
         </div>

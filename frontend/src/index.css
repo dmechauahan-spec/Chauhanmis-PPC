@@ -37,10 +37,33 @@
   --color-status-success: #3dd68c;
   --color-status-info: #4c9fe8;
 
+  /* Gauge caution zone — GaugeDial's middle red/amber/green band ONLY.
+     Deliberately a separate token from --color-signal-amber, not a reuse of
+     it: signal-amber is reserved for actions/emphasis, never state (see the
+     PlanningCard "At Risk" comment in dashboard-page.tsx for the earlier,
+     already-fixed instance of that exact mistake). A gauge's middle zone is
+     a state ("caution range"), so it gets its own warm-orange token instead
+     of borrowing the one true accent's meaning. */
+  --color-gauge-caution: #e0932e;
+
+  /* Secondary accent — muted teal, the one deliberate departure from the
+     amber-only accent rule. Scope is intentionally narrow: chart fills,
+     decorative texture (e.g. the dashboard's blueprint-grid), and secondary
+     chart series ONLY. Never for actions, status, or emphasis — those stay
+     signal-amber/status-*, full stop. Picked as a cool complement to
+     amber's warm hue specifically so it reads as "a second, distinct
+     material," not a low-saturation copy of amber that dilutes it. */
+  --color-accent-teal: #4fa8a0;
+
   /* Login page blueprint-grid line strength — light theme needs a much
      stronger line than dark to stay visible against near-white paper (a
      light hairline on light paper all but disappears at dark mode's 18%). */
   --blueprint-line-opacity: 18%;
+  /* Dashboard hero texture — the login page's treatment was, by design
+     feedback, "very subtle... barely-there." This is the same texture at a
+     level that's actually perceptible as a design element, used behind the
+     gauge cluster. Roughly 2x the base line strength in each theme. */
+  --blueprint-line-opacity-hero: 34%;
 
   /* Fonts */
   --font-display: "Space Grotesk Variable", "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
@@ -146,7 +169,15 @@
   --color-status-success: #198051;
   --color-status-info: #2d74b4;
 
+  --color-gauge-caution: #a5620a;
+  --color-accent-teal: #1f7a72;
+
   --blueprint-line-opacity: 45%;
+  /* The dashboard's stronger hero texture — see .blueprint-grid-hero below —
+     needs its own light-theme bump for the same reason the base
+     --blueprint-line-opacity does (a light line barely survives on light
+     paper). */
+  --blueprint-line-opacity-hero: 70%;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -177,6 +208,25 @@
         transparent 1px
       );
     background-size: 32px 32px;
+  }
+
+  /* Dashboard's gauge-cluster texture — same schematic grid, deliberately
+     louder (--blueprint-line-opacity-hero) and coarser (48px vs. 32px) so it
+     reads as a design element behind the hero gauge instead of disappearing
+     the way the login page's did. */
+  .blueprint-grid-hero {
+    background-image:
+      linear-gradient(
+        to right,
+        color-mix(in srgb, var(--color-surface-border) var(--blueprint-line-opacity-hero), transparent) 1px,
+        transparent 1px
+      ),
+      linear-gradient(
+        to bottom,
+        color-mix(in srgb, var(--color-surface-border) var(--blueprint-line-opacity-hero), transparent) 1px,
+        transparent 1px
+      );
+    background-size: 48px 48px;
   }
 }
 

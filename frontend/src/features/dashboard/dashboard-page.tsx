@@ -1,8 +1,8 @@
 import { RefreshCw, TriangleAlert, ShieldCheck, ShieldAlert, ShieldQuestion } from "lucide-react";
-import { useDashboardOverview } from "./use-dashboard-overview";
+import { useDashboardOverview, getOverviewDateRange } from "./use-dashboard-overview";
 import { StatTile } from "./stat-tile";
-import { KpiTile } from "./kpi-tile";
 import { MiniBarChart } from "./mini-bar-chart";
+import { GaugeDial } from "@/components/gauge-dial";
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -12,9 +12,18 @@ import { PipelineStepper } from "@/components/pipeline-stepper";
 import { PR_STATUS_BADGE_VARIANT } from "@/features/purchase-requisitions/pr-badges";
 import { apiErrorMessage } from "@/lib/api-client";
 import { formatNumber, formatPct, formatShortDate } from "@/lib/format";
-import { KPI_THRESHOLDS, kpiVariant } from "@/lib/kpi-thresholds";
+import { fillDailyProductionSeries } from "@/lib/date-series";
+import { KPI_THRESHOLDS } from "@/lib/kpi-thresholds";
+import { cn } from "@/lib/utils";
 import type { ManagementMetrics, MaterialsHealth, PlanningHealth, PrStatus, ProductionPeriodRow } from "@/types/api";
 
+// Role-agnostic by construction: DashboardPage reads only from
+// useDashboardOverview()'s response shape, never from the logged-in user's
+// role. Every role that can reach /dashboard (Admin, StoreManager,
+// ProductionManager — see nav-config.ts) renders through this exact
+// component; the backend varies what's IN the response, not which
+// component renders it. So the gauge cluster / bento layout below applies
+// to all three automatically, with nothing role-specific to duplicate.
 export function DashboardPage() {
   const { data, isPending, isError, error, refetch, isFetching } = useDashboardOverview();
 
@@ -47,16 +56,16 @@ export function DashboardPage() {
       {isPending && <DashboardSkeleton />}
 
       {data && (
-        <div className="flex flex-col gap-5">
-          {/* Management metrics — the four headline KPIs */}
-          <ManagementKpiRow management={data.management} />
-
-          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-            <ProductionCard production={data.production} />
-            <PlanningCard planning={data.planning} />
-          </div>
-
-          <MaterialsCard materials={data.materials} />
+        // A genuine bento grid — mixed cell sizes, not a uniform N-column
+        // repeat. 12 columns on lg: gauge cluster/planning split 8/4 in row
+        // one, production/materials split 5/7 in row two. Two different
+        // ratios in two rows is what makes this read as composed rather
+        // than a repeating template.
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+          <GaugeClusterCard management={data.management} className="lg:col-span-8" />
+          <PlanningCard planning={data.planning} className="lg:col-span-4" />
+          <ProductionCard production={data.production} className="lg:col-span-5" />
+          <MaterialsCard materials={data.materials} className="lg:col-span-7" />
         </div>
       )}
     </div>
@@ -64,64 +73,105 @@ export function DashboardPage() {
 }
 
 /**
+ * The hero element — see GaugeDial's own doc comment for why this replaced
+ * the four-equal-tiles KPI row. OEE gets the "hero" gauge (biggest visual
+ * element on the page, per the design brief: it's the single most
+ * important factory-health number); the other three sit beside it as
+ * visibly smaller "sm" gauges, a real size hierarchy instead of four
+ * identical cards. blueprint-grid-hero is the dashboard's stronger
+ * schematic-grid texture (see index.css) — actually perceptible behind the
+ * cluster, unlike the login page's near-invisible original.
+ *
  * The backend's response distinguishes "no underlying data" from a real
- * computed 0 for all four metrics, just not uniformly at the top level:
- * OEE and Capacity Utilization are already `number | null` (null = no
+ * computed 0 for all four metrics, just not uniformly at the top level: OEE
+ * and Capacity Utilization are already `number | null` (null = no
  * computable data — see ppc-backend's oeeCalculator.ts). Production
  * Efficiency and Delivery Performance are always a plain number (0 when
  * there's nothing to average/rate over), but `detail.productionEfficiency
  * .lineCount` / `detail.deliveryPerformance.totalCount` report exactly how
  * many things contributed — 0 of either means "no data," same as a null
- * would. So this is a real backend-provided signal for all four, not a
- * frontend-only heuristic.
+ * would.
  */
-function ManagementKpiRow({ management }: { management: ManagementMetrics }) {
+function GaugeClusterCard({ management, className }: { management: ManagementMetrics; className?: string }) {
   const logCount = management.detail.oee.logCount;
   const lineCount = management.detail.productionEfficiency.lineCount;
   const deliveryCount = management.detail.deliveryPerformance.totalCount;
 
-  // Normalize all four to "value is null when there's no contributing
-  // data" — OEE/Capacity Utilization already come this way from the
-  // backend; Production Efficiency/Delivery Performance are derived here
-  // from their real contributing-count fields (see comment above).
   const productionEfficiencyValue = lineCount > 0 ? management.productionEfficiencyPct : null;
   const deliveryValue = deliveryCount > 0 ? management.deliveryPerformancePct : null;
 
   return (
-    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-      <KpiTile
-        label="OEE"
-        value={management.oeePct}
-        variant={kpiVariant(management.oeePct, KPI_THRESHOLDS.oee)}
-        emptyReason="No production logs in this range"
-        contributingLabel={`${logCount} log${logCount === 1 ? "" : "s"}`}
-      />
-      <KpiTile
-        label="Capacity Utilization"
-        value={management.capacityUtilizationPct}
-        variant={kpiVariant(management.capacityUtilizationPct, KPI_THRESHOLDS.capacityUtilization)}
-        emptyReason="No output data in this range"
-        contributingLabel={`${logCount} log${logCount === 1 ? "" : "s"}`}
-      />
-      <KpiTile
-        label="Production Efficiency"
-        value={productionEfficiencyValue}
-        variant={kpiVariant(productionEfficiencyValue, KPI_THRESHOLDS.productionEfficiency)}
-        emptyReason="No line output in this range"
-        contributingLabel={`${lineCount} line${lineCount === 1 ? "" : "s"}`}
-      />
-      <KpiTile
-        label="Delivery Performance"
-        value={deliveryValue}
-        variant={kpiVariant(deliveryValue, KPI_THRESHOLDS.deliveryPerformance)}
-        emptyReason="No completed orders in this range"
-        contributingLabel={`${deliveryCount} order${deliveryCount === 1 ? "" : "s"}`}
-      />
-    </div>
+    // No overflow-hidden here: background-image already clips to the
+    // card's own rounded corners on its own (CSS default), and adding
+    // overflow-hidden as a belt-and-suspenders for the texture had the side
+    // effect of silently clipping the hero gauge's value text at narrow
+    // widths instead of letting it visibly shrink/overflow where you'd
+    // notice and fix it.
+    <Card className={cn("blueprint-grid-hero", className)}>
+      <CardHeader>
+        <CardTitle>Factory Health</CardTitle>
+        <CardDescription>The four headline management metrics, last 30 days</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col items-center gap-8 py-8 lg:flex-row lg:items-center lg:gap-6 xl:gap-10">
+        <GaugeDial
+          label="OEE"
+          value={management.oeePct}
+          thresholds={KPI_THRESHOLDS.oee}
+          size="hero"
+          emptyReason="No production logs in this range"
+          contributingLabel={`${logCount} log${logCount === 1 ? "" : "s"}`}
+          className="shrink-0"
+        />
+        {/* A strict grid, not flex-wrap — each gauge shrinks to fit its
+            column rather than the row unpredictably wrapping to a
+            single-file stack when the card is narrower than 3 full-size
+            gauges (see GaugeDial's max-w cap for the size it shrinks from).
+            Single column below sm: at phone widths three gauges across has
+            no room to be legible (labels/values collide), so this drops to
+            one full-width gauge per row instead of shrinking them further. */}
+        <div className="grid w-full grid-cols-1 gap-4 sm:grid-cols-3 sm:gap-6">
+          <GaugeDial
+            label="Capacity Utilization"
+            value={management.capacityUtilizationPct}
+            thresholds={KPI_THRESHOLDS.capacityUtilization}
+            size="sm"
+            emptyReason="No output data in this range"
+            contributingLabel={`${logCount} log${logCount === 1 ? "" : "s"}`}
+            className="max-w-none"
+          />
+          <GaugeDial
+            label="Production Efficiency"
+            value={productionEfficiencyValue}
+            thresholds={KPI_THRESHOLDS.productionEfficiency}
+            size="sm"
+            emptyReason="No line output in this range"
+            contributingLabel={`${lineCount} line${lineCount === 1 ? "" : "s"}`}
+            className="max-w-none"
+          />
+          <GaugeDial
+            label="Delivery Performance"
+            value={deliveryValue}
+            thresholds={KPI_THRESHOLDS.deliveryPerformance}
+            size="sm"
+            emptyReason="No completed orders in this range"
+            contributingLabel={`${deliveryCount} order${deliveryCount === 1 ? "" : "s"}`}
+            className="max-w-none"
+          />
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
-function ProductionCard({ production }: { production: ProductionPeriodRow[] }) {
+function ProductionCard({ production, className }: { production: ProductionPeriodRow[]; className?: string }) {
+  // The backend only returns a row for days with an actual log entry (see
+  // date-series.ts) — zero-fill the requested range here so the chart shows
+  // one bar per calendar day. Sums/averages below are unaffected: zero-qty
+  // filler days don't change totalOutput/totalGood, and their null
+  // avgAttendancePct is already excluded by the existing null-filter.
+  const { dateFrom, dateTo } = getOverviewDateRange();
+  const dailySeries = fillDailyProductionSeries(production, dateFrom, dateTo);
+
   const totalOutput = production.reduce((sum, p) => sum + p.totalOutputQty, 0);
   const totalGood = production.reduce((sum, p) => sum + p.totalGoodQty, 0);
   const attendanceValues = production.map((p) => p.avgAttendancePct).filter((v): v is number => v !== null);
@@ -129,14 +179,14 @@ function ProductionCard({ production }: { production: ProductionPeriodRow[] }) {
     attendanceValues.length > 0 ? attendanceValues.reduce((a, b) => a + b, 0) / attendanceValues.length : null;
 
   return (
-    <Card>
+    <Card className={className}>
       <CardHeader>
         <CardTitle>Production Output</CardTitle>
-        <CardDescription>Daily total output vs. good units, this range</CardDescription>
+        <CardDescription>Daily total output, this range</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <MiniBarChart
-          data={production.map((p) => ({ label: formatShortDate(p.periodLabel), value: p.totalOutputQty }))}
+          data={dailySeries.map((p) => ({ label: formatShortDate(p.periodLabel), value: p.totalOutputQty }))}
           formatValue={formatNumber}
         />
         <div className="grid grid-cols-3 gap-2 border-t border-surface-border pt-4">
@@ -149,24 +199,58 @@ function ProductionCard({ production }: { production: ProductionPeriodRow[] }) {
   );
 }
 
-function PlanningCard({ planning }: { planning: PlanningHealth }) {
+function PlanningCard({ planning, className }: { planning: PlanningHealth; className?: string }) {
+  const { scheduledCount, delayedCount, atRiskCount } = planning;
+
+  // Break the "three identical tiles" symmetry: whichever concerning count
+  // (Delayed, At Risk) is larger gets the big "lead" tile — that's the
+  // number that actually needs a StoreManager/ProductionManager's
+  // attention right now. An all-clear board (both zero) lets Scheduled
+  // lead instead, so the layout never looks broken by promoting a zero to
+  // the headline slot.
+  const leader: "delayed" | "atRisk" | "scheduled" =
+    delayedCount === 0 && atRiskCount === 0 ? "scheduled" : delayedCount >= atRiskCount ? "delayed" : "atRisk";
+
+  // Scheduled = info and At Risk/Delayed = critical match the design
+  // brief's own worked examples for these tokens exactly ("Scheduled,
+  // neutral informational states" / "RM Shortage, At Risk, errors"). At
+  // Risk previously used amber, which the brief reserves strictly for
+  // actions/emphasis, not state — corrected in an earlier pass since At
+  // Risk is a state, same as Delayed.
+  const tiles = {
+    scheduled: <StatTile label="Scheduled" value={formatNumber(scheduledCount)} variant="info" />,
+    delayed: <StatTile label="Delayed" value={formatNumber(delayedCount)} variant="critical" />,
+    atRisk: <StatTile label="At Risk" value={formatNumber(atRiskCount)} variant="critical" />,
+  };
+  const leadTile = {
+    scheduled: (
+      <StatTile
+        label="Scheduled"
+        value={formatNumber(scheduledCount)}
+        variant="info"
+        size="lead"
+        sublabel="All clear — nothing delayed or at risk"
+      />
+    ),
+    delayed: <StatTile label="Delayed" value={formatNumber(delayedCount)} variant="critical" size="lead" />,
+    atRisk: <StatTile label="At Risk" value={formatNumber(atRiskCount)} variant="critical" size="lead" />,
+  }[leader];
+  const otherKeys = (["scheduled", "delayed", "atRisk"] as const).filter((k) => k !== leader);
+
   return (
-    <Card>
+    <Card className={className}>
       <CardHeader>
         <CardTitle>Planning Health</CardTitle>
         <CardDescription>Orders in flight, right now</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <div className="grid grid-cols-3 gap-2">
-          {/* Scheduled = info and At Risk = critical match the design
-              brief's own worked examples for these tokens exactly
-              ("Scheduled, neutral informational states" / "RM Shortage, At
-              Risk, errors"). At Risk previously used amber, which the brief
-              reserves strictly for actions/emphasis, not state — corrected
-              here since At Risk is a state, same as Delayed. */}
-          <StatTile label="Scheduled" value={formatNumber(planning.scheduledCount)} variant="info" />
-          <StatTile label="Delayed" value={formatNumber(planning.delayedCount)} variant="critical" />
-          <StatTile label="At Risk" value={formatNumber(planning.atRiskCount)} variant="critical" />
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="sm:col-span-2">{leadTile}</div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-1">
+            {otherKeys.map((k) => (
+              <div key={k}>{tiles[k]}</div>
+            ))}
+          </div>
         </div>
         <div className="rounded-md border border-surface-border bg-surface-sunken px-4 py-3">
           <p className="mb-2.5 text-xs font-medium tracking-wide text-ink-muted uppercase">
@@ -182,19 +266,28 @@ function PlanningCard({ planning }: { planning: PlanningHealth }) {
   );
 }
 
-function MaterialsCard({ materials }: { materials: MaterialsHealth }) {
+function MaterialsCard({ materials, className }: { materials: MaterialsHealth; className?: string }) {
   const prEntries = Object.entries(materials.procurementStatusBreakdown) as [PrStatus, number][];
   const prTotal = Math.max(1, prEntries.reduce((sum, [, count]) => sum + count, 0));
 
+  // Same "let the concerning number lead" idea as PlanningCard, applied to
+  // a 3-column split instead of a big-tile-plus-small-tiles one: when
+  // there's an actual shortage, Shortage Impact gets the widest column and
+  // a "lead"-sized number; when the board is clean, Purchase Requisitions
+  // (the thing most likely to have something worth looking at day-to-day)
+  // takes the extra width instead. Either way it's a 2/x/y split, never an
+  // even three-across.
+  const hasShortage = materials.rmShortagePartsCount > 0;
+
   return (
-    <Card>
+    <Card className={className}>
       <CardHeader>
         <CardTitle>Material Health</CardTitle>
         <CardDescription>Clear-to-build status and the purchase requisition pipeline</CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
-          <div className="flex flex-col gap-2">
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-7">
+          <div className="flex flex-col gap-2 lg:col-span-2">
             <p className="text-xs font-medium tracking-wide text-ink-muted uppercase">Clear-to-Build</p>
             <div className="flex flex-col gap-1.5">
               <CtbRow icon={ShieldCheck} label="Clear to Build" value={materials.ctbBreakdown.clearCount} variant="success" />
@@ -203,12 +296,17 @@ function MaterialsCard({ materials }: { materials: MaterialsHealth }) {
             </div>
           </div>
 
-          <div className="flex flex-col gap-2">
+          <div className={cn("flex flex-col gap-2", hasShortage ? "lg:col-span-3" : "lg:col-span-1")}>
             <p className="text-xs font-medium tracking-wide text-ink-muted uppercase">Shortage Impact</p>
-            <StatTile label="Parts Short" value={formatNumber(materials.rmShortagePartsCount)} variant="critical" />
+            <StatTile
+              label="Parts Short"
+              value={formatNumber(materials.rmShortagePartsCount)}
+              variant="critical"
+              size={hasShortage ? "lead" : "default"}
+            />
           </div>
 
-          <div className="flex flex-col gap-2">
+          <div className={cn("flex flex-col gap-2", hasShortage ? "lg:col-span-2" : "lg:col-span-4")}>
             <p className="text-xs font-medium tracking-wide text-ink-muted uppercase">Purchase Requisitions</p>
             <div className="flex flex-col gap-1.5">
               {prEntries.map(([status, count]) => (
@@ -218,7 +316,7 @@ function MaterialsCard({ materials }: { materials: MaterialsHealth }) {
                   </Badge>
                   <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-sunken">
                     <div
-                      className="h-full rounded-full bg-status-info/70"
+                      className="h-full rounded-full bg-accent-teal/70"
                       style={{ width: `${(count / prTotal) * 100}%` }}
                     />
                   </div>
@@ -267,17 +365,11 @@ function MiniStat({ label, value }: { label: string; value: string }) {
 
 function DashboardSkeleton() {
   return (
-    <div className="flex flex-col gap-5">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {Array.from({ length: 4 }).map((_, i) => (
-          <Skeleton key={i} className="h-[64px]" />
-        ))}
-      </div>
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-        <Skeleton className="h-64" />
-        <Skeleton className="h-64" />
-      </div>
-      <Skeleton className="h-48" />
+    <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+      <Skeleton className="h-72 lg:col-span-8" />
+      <Skeleton className="h-72 lg:col-span-4" />
+      <Skeleton className="h-64 lg:col-span-5" />
+      <Skeleton className="h-64 lg:col-span-7" />
     </div>
   );
 }

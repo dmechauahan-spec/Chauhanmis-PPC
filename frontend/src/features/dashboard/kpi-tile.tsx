@@ -29,7 +29,11 @@ export function KpiTile({ label, value, variant, emptyReason, contributingLabel 
 
       <p
         className={cn(
-          "mt-1 font-mono text-2xl leading-none font-medium tabular-nums",
+          // Space Grotesk, not JetBrains Mono — mono is reserved for
+          // tabular/list contexts (table cells, IDs, codes) now; a large
+          // standalone metric value reads as a headline number, not data-
+          // table content. See README "Design System" typography rule.
+          "mt-1 font-display text-2xl leading-none font-bold tabular-nums",
           STATUS_TEXT_COLOR[variant],
         )}
       >

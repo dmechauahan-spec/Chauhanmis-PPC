@@ -6,6 +6,10 @@ interface StatTileProps {
   value: string;
   sublabel?: string;
   variant?: StatusDotVariant;
+  /** `lead`: the tile the dashboard's asymmetric layout is giving visual
+   * priority to (see "leading metric" logic in dashboard-page.tsx) — bigger
+   * number, a left accent bar, more padding. `default` otherwise. */
+  size?: "default" | "lead";
 }
 
 /**
@@ -16,19 +20,41 @@ interface StatTileProps {
  * separate component from KpiTile rather than merged, since that
  * distinction — 0 is always meaningful here vs. sometimes-a-placeholder
  * there — is a real behavioral difference, not just a style one. Set in
- * monospace per the app-wide numeric-data convention.
+ * Space Grotesk, not monospace — see kpi-tile.tsx's identical note; mono is
+ * for tabular/list contexts only now, never a large standalone number.
  */
-export function StatTile({ label, value, sublabel, variant = "info" }: StatTileProps) {
+export function StatTile({ label, value, sublabel, variant = "info", size = "default" }: StatTileProps) {
+  const isLead = size === "lead";
   return (
-    <div className="rounded-md border border-surface-border bg-surface-sunken px-3.5 py-2.5">
+    <div
+      className={cn(
+        "rounded-md border border-surface-border bg-surface-sunken",
+        isLead ? "border-l-[3px] px-4 py-3.5" : "px-3.5 py-2.5",
+      )}
+      style={isLead ? { borderLeftColor: `var(--color-${variantToBorderVar(variant)})` } : undefined}
+    >
       <div className="flex items-center gap-1.5">
         <StatusDot variant={variant} />
-        <p className="text-xs font-medium tracking-wide text-ink-muted uppercase">{label}</p>
+        <p className={cn("font-medium tracking-wide text-ink-muted uppercase", isLead ? "text-xs" : "text-xs")}>
+          {label}
+        </p>
       </div>
-      <p className={cn("mt-1 font-mono text-2xl leading-none font-medium tabular-nums", STATUS_TEXT_COLOR[variant])}>
+      <p
+        className={cn(
+          "font-display leading-none font-bold tabular-nums",
+          isLead ? "mt-2 text-4xl" : "mt-1 text-2xl",
+          STATUS_TEXT_COLOR[variant],
+        )}
+      >
         {value}
       </p>
-      {sublabel && <p className="mt-1 text-xs text-ink-muted">{sublabel}</p>}
+      {sublabel && <p className={cn("text-ink-muted", isLead ? "mt-1.5 text-xs" : "mt-1 text-xs")}>{sublabel}</p>}
     </div>
   );
+}
+
+function variantToBorderVar(variant: StatusDotVariant): string {
+  if (variant === "amber") return "signal-amber";
+  if (variant === "faint") return "surface-border";
+  return `status-${variant}`;
 }
