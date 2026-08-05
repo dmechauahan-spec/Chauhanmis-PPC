@@ -28,7 +28,9 @@ function AlertDialogContent({ className, ...props }: React.ComponentProps<typeof
       <AlertDialogPrimitive.Content
         data-slot="alert-dialog-content"
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-md border border-surface-border bg-surface-raised p-5 text-ink-primary shadow-lg shadow-black/50",
+          // Same w-[calc(100%-2rem)] fix as dialog.tsx — see that file's
+          // comment for why plain w-full touches both screen edges here.
+          "fixed top-1/2 left-1/2 z-50 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-md border border-surface-border bg-surface-raised p-5 text-ink-primary shadow-lg shadow-black/50",
           "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
           className,
         )}

@@ -34,7 +34,14 @@ function DialogContent({
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 flex max-h-[85vh] w-full max-w-lg -translate-x-1/2 -translate-y-1/2 flex-col rounded-md border border-surface-border bg-surface-raised text-ink-primary shadow-lg shadow-black/50",
+          // w-[calc(100%-2rem)] rather than w-full: this is `fixed`, so its
+          // containing block is the viewport, not a parent with its own
+          // padding — w-full alone means genuinely 100vw, touching both
+          // screen edges with zero margin on a phone. The calc() keeps a
+          // consistent 1rem gutter on each side below the max-w-lg cap,
+          // same fix every dialog in the app inherits from here (Run
+          // Scheduling preview, Generate PR, bulk BOM import, etc.).
+          "fixed top-1/2 left-1/2 z-50 flex max-h-[85vh] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 flex-col rounded-md border border-surface-border bg-surface-raised text-ink-primary shadow-lg shadow-black/50",
           "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
           className,
         )}
