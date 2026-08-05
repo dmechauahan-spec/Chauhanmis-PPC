@@ -145,7 +145,15 @@ function GaugeClusterCard({ management, className }: { management: ManagementMet
             gauges (see GaugeDial's max-w cap for the size it shrinks from).
             Single column below sm: at phone widths three gauges across has
             no room to be legible (labels/values collide), so this drops to
-            one full-width gauge per row instead of shrinking them further. */}
+            one full-width gauge per row instead of shrinking them further.
+            lg:max-w-none on each gauge below (not a flat max-w-none): that
+            override exists so these three can each fill their grid column
+            at the DESKTOP 3-across layout — applied unscoped, it also
+            stripped their own "sm" size cap on mobile's single-column
+            stack, making them render exactly as large as the hero gauge
+            and losing the intended hero/secondary hierarchy there. Scoping
+            it to lg: lets them keep their real (smaller) max-width below
+            that breakpoint. */}
         <div className="grid w-full min-w-0 grid-cols-1 gap-4 sm:grid-cols-3 sm:gap-6">
           <GaugeDial
             label="Capacity Utilization"
@@ -154,7 +162,7 @@ function GaugeClusterCard({ management, className }: { management: ManagementMet
             size="sm"
             emptyReason="No output data in this range"
             contributingLabel={`${logCount} log${logCount === 1 ? "" : "s"}`}
-            className="max-w-none"
+            className="lg:max-w-none"
           />
           <GaugeDial
             label="Production Efficiency"
@@ -163,7 +171,7 @@ function GaugeClusterCard({ management, className }: { management: ManagementMet
             size="sm"
             emptyReason="No line output in this range"
             contributingLabel={`${lineCount} line${lineCount === 1 ? "" : "s"}`}
-            className="max-w-none"
+            className="lg:max-w-none"
           />
           <GaugeDial
             label="Delivery Performance"
@@ -172,7 +180,7 @@ function GaugeClusterCard({ management, className }: { management: ManagementMet
             size="sm"
             emptyReason="No completed orders in this range"
             contributingLabel={`${deliveryCount} order${deliveryCount === 1 ? "" : "s"}`}
-            className="max-w-none"
+            className="lg:max-w-none"
           />
         </div>
       </CardContent>
