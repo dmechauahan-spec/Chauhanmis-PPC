@@ -104,7 +104,14 @@ const SIZE_CONFIG: Record<"hero" | "sm", SizeConfig> = {
   },
   sm: {
     wrapperClassName: "w-full max-w-[11rem]",
-    valueClassName: "text-2xl",
+    // Same reasoning as hero's responsive value text, sized for a
+    // different danger zone: three "sm" gauges share one row from the lg
+    // breakpoint (1024px) up, and right at that boundary their column is
+    // its narrowest relative to the value text — smaller than at any wider
+    // viewport, where there's more room. text-lg fits that worst case;
+    // text-2xl is safe again once xl (1280px) gives the row enough width
+    // that the gauges have grown past their crunch point.
+    valueClassName: "text-lg xl:text-2xl",
     labelClassName: "text-xs",
     captionClassName: "text-[0.65rem]",
     showTicks: false,
@@ -180,7 +187,7 @@ export function GaugeDial({
     value === null ? `${label}: no data` : `${label}: ${displayValue}, ${zoneOf(value, thresholds)} zone`;
 
   return (
-    <div className={cn("flex min-w-0 flex-col items-center", config.wrapperClassName, className)}>
+    <div data-gauge={label} className={cn("flex min-w-0 flex-col items-center", config.wrapperClassName, className)}>
       <svg viewBox="0 0 200 116" className="w-full" role="img" aria-label={accessibleLabel}>
         {value === null ? (
           <path

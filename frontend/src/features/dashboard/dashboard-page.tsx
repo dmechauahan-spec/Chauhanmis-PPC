@@ -61,7 +61,7 @@ export function DashboardPage() {
         // one, production/materials split 5/7 in row two. Two different
         // ratios in two rows is what makes this read as composed rather
         // than a repeating template.
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        <div data-testid="dashboard-bento-grid" className="grid grid-cols-1 gap-5 lg:grid-cols-12">
           <GaugeClusterCard management={data.management} className="lg:col-span-8" />
           <PlanningCard planning={data.planning} className="lg:col-span-4" />
           <ProductionCard production={data.production} className="lg:col-span-5" />
@@ -112,7 +112,24 @@ function GaugeClusterCard({ management, className }: { management: ManagementMet
         <CardTitle>Factory Health</CardTitle>
         <CardDescription>The four headline management metrics, last 30 days</CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col items-center gap-8 py-8 lg:flex-row lg:items-center lg:gap-6 xl:gap-10">
+      {/* lg:grid with minmax(0, Nfr) columns, NOT lg:flex-row — the
+          previous flex version gave the hero gauge shrink-0 (so it always
+          held its full max-width) while the secondary group had ordinary
+          flex-shrink. Right at the lg breakpoint (~1024px), there isn't
+          enough room for hero-at-full-width + 3 legible secondary gauges,
+          and shrink-0 meant the secondary group absorbed the entire
+          shortfall — collapsing toward zero width and making its
+          unbreakable "57.3%"-style text visually overlap between gauges.
+          minmax(0, fr) columns can never be starved like that: each
+          column's floor is 0, not "whatever's left after the other side
+          took what it wanted," so both sides compress together,
+          proportionally, at every width. See GaugeDial's own max-w cap for
+          why they still stop growing once there's ample space (1440px+
+          looks identical to before). */}
+      <CardContent
+        data-testid="gauge-cluster-row"
+        className="flex flex-col items-center gap-8 py-8 lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] lg:items-center lg:gap-6 xl:gap-10"
+      >
         <GaugeDial
           label="OEE"
           value={management.oeePct}
@@ -120,7 +137,7 @@ function GaugeClusterCard({ management, className }: { management: ManagementMet
           size="hero"
           emptyReason="No production logs in this range"
           contributingLabel={`${logCount} log${logCount === 1 ? "" : "s"}`}
-          className="shrink-0"
+          className="min-w-0 justify-self-center"
         />
         {/* A strict grid, not flex-wrap — each gauge shrinks to fit its
             column rather than the row unpredictably wrapping to a
@@ -129,7 +146,7 @@ function GaugeClusterCard({ management, className }: { management: ManagementMet
             Single column below sm: at phone widths three gauges across has
             no room to be legible (labels/values collide), so this drops to
             one full-width gauge per row instead of shrinking them further. */}
-        <div className="grid w-full grid-cols-1 gap-4 sm:grid-cols-3 sm:gap-6">
+        <div className="grid w-full min-w-0 grid-cols-1 gap-4 sm:grid-cols-3 sm:gap-6">
           <GaugeDial
             label="Capacity Utilization"
             value={management.capacityUtilizationPct}
@@ -244,7 +261,7 @@ function PlanningCard({ planning, className }: { planning: PlanningHealth; class
         <CardDescription>Orders in flight, right now</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div data-testid="planning-tiles-row" className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div className="sm:col-span-2">{leadTile}</div>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-1">
             {otherKeys.map((k) => (
@@ -256,7 +273,16 @@ function PlanningCard({ planning, className }: { planning: PlanningHealth; class
           <p className="mb-2.5 text-xs font-medium tracking-wide text-ink-muted uppercase">
             Every order moves through this pipeline
           </p>
-          <PipelineStepper currentStage="Running" size="full" />
+          {/* compact, not full — PipelineStepper's own size doc calls
+              compact out for exactly this context ("table rows /
+              dashboard"). This card is a narrow lg:col-span-4 sidebar
+              column, not a detail-page-width layout: full's 7 text labels
+              have nowhere near enough room here and — even after fixing
+              the underlying max-width/wrap bug (see pipeline-stepper.tsx)
+              — degrade to unreadable single-letter-per-line stacks rather
+              than a real overflow. Dots-only sidesteps the problem instead
+              of just making the failure mode prettier. */}
+          <PipelineStepper currentStage="Running" size="compact" />
           <p className="mt-2.5 text-xs text-ink-faint">
             Illustrative — per-order pipelines land on the Orders module in a later phase.
           </p>

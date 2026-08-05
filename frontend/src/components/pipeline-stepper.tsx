@@ -43,6 +43,7 @@ export function PipelineStepper({ currentStage, size = "full", className }: Pipe
         return (
           <li
             key={stage.value}
+            data-testid="pipeline-stage"
             aria-current={state === "current" ? "step" : undefined}
             className={cn("flex min-w-0 items-center", !isLast && "flex-1")}
           >
@@ -60,15 +61,37 @@ export function PipelineStepper({ currentStage, size = "full", className }: Pipe
               <Dot state={state} size={size} />
               {size === "full" && (
                 <span
+                  data-testid="pipeline-stage-label"
                   className={cn(
-                    // break-words is the final safety net: word-wrapping
-                    // alone still has a floor at each label's single
-                    // longest word (e.g. "Dispatch"). This lets the browser
-                    // break mid-word in the extreme case a column gets
-                    // narrower than that, so the row structurally cannot
-                    // push outside its card at any width — it degrades to
-                    // an awkward break rather than an overflow.
-                    "mt-1.5 max-w-[5.5rem] text-center text-xs leading-tight break-words text-balance",
+                    // `block` is load-bearing: max-width (and, with it,
+                    // break-words/text-balance actually constraining wrap
+                    // width) does not apply to inline elements per the CSS
+                    // spec — a plain <span> silently ignored max-w-[5.5rem]
+                    // entirely and rendered every label at its natural
+                    // single-line width, overflowing into neighboring
+                    // stages once the row got crowded enough (7 stages in a
+                    // narrow card, e.g. Planning Health around the lg
+                    // breakpoint) that there wasn't enough natural slack to
+                    // hide it.
+                    //
+                    // `w-full` is equally load-bearing and easy to miss:
+                    // max-w-[5.5rem] is only an UPPER bound (88px) — once
+                    // the label is block-level it's still free to size to
+                    // its own single-line content below that cap (e.g.
+                    // "Scheduled" comfortably fits 88px on one line), so it
+                    // ignored its actual ~20px-wide parent just the same.
+                    // w-full forces it to take exactly its parent's real
+                    // (already correctly min-w-0-shrunk) width, so
+                    // break-words has something narrower than the cap to
+                    // actually wrap against. break-words is still the final
+                    // safety net: word-wrapping alone still has a floor at
+                    // each label's single longest word (e.g. "Dispatch").
+                    // This lets the browser break mid-word in the extreme
+                    // case a column gets narrower than that, so the row
+                    // structurally cannot push outside its card at any
+                    // width — it degrades to an awkward break rather than
+                    // an overflow.
+                    "mt-1.5 block w-full max-w-[5.5rem] text-center text-xs leading-tight break-words text-balance",
                     state === "current" && "font-semibold text-signal-amber",
                     state === "completed" && "text-ink-primary",
                     state === "future" && "text-ink-faint",
