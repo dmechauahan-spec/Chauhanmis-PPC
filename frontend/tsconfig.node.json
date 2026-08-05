@@ -2,7 +2,12 @@
   "compilerOptions": {
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
     "target": "es2023",
-    "lib": ["ES2023"],
+    // DOM added for tests-visual/*.ts's page.evaluate() callbacks — those
+    // closures execute in the browser, and Playwright's own types don't
+    // implicitly inject DOM globals into how tsc type-checks the callback
+    // body. Harmless for vite.config.ts, the other file this project
+    // covers, which never references DOM globals.
+    "lib": ["ES2023", "DOM"],
     "types": ["node"],
     "skipLibCheck": true,
 
