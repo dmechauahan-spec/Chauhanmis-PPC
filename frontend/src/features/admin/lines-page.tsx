@@ -41,7 +41,7 @@ export function LinesPage() {
 
   return (
     <div className="mx-auto max-w-[1400px] px-6 py-6">
-      <div className="mb-6 flex items-center justify-between">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="font-display text-2xl font-semibold text-ink-primary">Lines</h1>
           <p className="text-sm text-ink-muted">{data ? `${data.total} total` : " "}</p>

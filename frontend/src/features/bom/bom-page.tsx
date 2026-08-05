@@ -40,7 +40,10 @@ export function BomPage() {
       </div>
 
       <div className="mb-5 flex flex-wrap items-end gap-3">
-        <div className="w-80">
+        {/* w-full below sm: a flat w-80 (320px) left only ~7px of slack at
+            a 375px viewport (375 - px-6 page padding) — technically fit,
+            but fragile on anything narrower (e.g. a 360px Android phone). */}
+        <div className="w-full sm:w-80">
           <label className="mb-1.5 block text-xs font-medium tracking-wide text-ink-muted uppercase">SKU</label>
           <SkuCombobox value={sku} onSelect={handleSelectSku} />
         </div>
@@ -78,7 +81,7 @@ function BomComponentsPanel({
 
   return (
     <div>
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="font-display text-sm font-medium tracking-wide text-ink-primary uppercase">
             Components — {modelRef}

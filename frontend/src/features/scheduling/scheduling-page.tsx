@@ -56,7 +56,11 @@ export function SchedulingPage() {
 
   return (
     <div className="mx-auto max-w-[1400px] px-6 py-6">
-      <div className="mb-6 flex items-center justify-between">
+      {/* flex-wrap + gap-3: without it, the title and "Run Scheduling"
+          button shared one unwrapped row that fit at exactly 375px with
+          only a couple pixels of breathing room — cramped, and would
+          overflow outright on anything narrower. */}
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="font-display text-2xl font-semibold text-ink-primary">Scheduling</h1>
           <p className="text-sm text-ink-muted">{data ? `${data.total} scheduled` : " "}</p>
