@@ -1,6 +1,7 @@
 import { LogOut, Monitor, Moon, Sun, User } from "lucide-react";
 import { useAuth } from "@/features/auth/auth-context";
 import { SpotlightSearch } from "@/features/search/spotlight-search";
+import { MobileNav } from "./mobile-nav";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -66,13 +67,20 @@ export function TopBar() {
   if (!user) return null;
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between border-b border-surface-border bg-surface-base px-5">
-      <SpotlightSearch />
-      <div className="flex items-center gap-1.5">
+    <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-surface-border bg-surface-base px-3 sm:px-5">
+      <div className="flex min-w-0 flex-1 items-center gap-1.5">
+        <MobileNav />
+        <SpotlightSearch />
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
         <ThemeToggle />
         <DropdownMenu>
           <DropdownMenuTrigger className="flex items-center gap-2.5 rounded-md px-2 py-1.5 outline-none hover:bg-surface-raised focus-visible:ring-2 focus-visible:ring-signal-amber/50">
-            <div className="text-right leading-tight">
+            {/* Name/role hidden below sm — narrow headers don't have room
+                for both this and a legible search control; the avatar
+                alone (plus email/role still shown inside the open menu)
+                is enough to identify who's signed in at a glance. */}
+            <div className="hidden text-right leading-tight sm:block">
               <p className="text-sm font-medium text-ink-primary">{user.name}</p>
               <p className="text-xs text-ink-muted">{ROLE_LABEL[user.role] ?? user.role}</p>
             </div>

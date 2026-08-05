@@ -52,14 +52,20 @@ export function SpotlightSearch() {
 
   return (
     <>
+      {/* Icon-only below sm (no room for a 256px search bar next to the
+          hamburger + avatar at phone widths, and Cmd/Ctrl+K — the kbd hint
+          below — isn't a thing on a touchscreen anyway); the full bar with
+          label + shortcut hint returns from sm up. Tap-to-open (onClick)
+          is unchanged either way. */}
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex w-64 items-center gap-2 rounded-md border border-surface-border bg-surface-sunken px-3 py-1.5 text-sm text-ink-faint outline-none transition-colors hover:text-ink-muted focus-visible:ring-2 focus-visible:ring-signal-amber/50"
+        aria-label="Search"
+        className="flex items-center gap-2 rounded-md border border-surface-border bg-surface-sunken px-3 py-1.5 text-sm text-ink-faint outline-none transition-colors hover:text-ink-muted focus-visible:ring-2 focus-visible:ring-signal-amber/50 sm:w-64"
       >
-        <Search className="size-3.5" />
-        <span className="flex-1 text-left">Search…</span>
-        <kbd className="rounded-sm border border-surface-border bg-surface-raised px-1.5 py-0.5 font-mono text-[0.65rem] text-ink-faint">
+        <Search className="size-3.5 shrink-0" />
+        <span className="hidden flex-1 text-left sm:inline">Search…</span>
+        <kbd className="hidden rounded-sm border border-surface-border bg-surface-raised px-1.5 py-0.5 font-mono text-[0.65rem] text-ink-faint sm:inline-block">
           {navigator.platform.includes("Mac") ? "⌘K" : "Ctrl K"}
         </kbd>
       </button>

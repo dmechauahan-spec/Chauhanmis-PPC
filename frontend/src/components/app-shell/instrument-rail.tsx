@@ -5,20 +5,20 @@ import { NAV_GROUPS, isNavItemVisible } from "@/lib/nav-config";
 import { useAuth } from "@/features/auth/auth-context";
 
 /**
- * The fixed left instrument rail — the app's primary navigation, grouped by
- * domain. See README "Design System — Layout concept" for why this is a
- * rail, not a top navbar: this is a tool people keep open all day, and a
- * persistent, icon-anchored rail reads faster at a glance than a horizontal
- * menu once you already know where things live.
+ * The actual nav content — brand header + grouped links. Split out from
+ * the desktop rail wrapper (InstrumentRail, below) so the exact same
+ * markup can render inside the mobile Sheet drawer (mobile-nav.tsx)
+ * without duplicating the NAV_GROUPS/isNavItemVisible logic.
+ *
+ * `onNavigate` is called after a link is clicked — the mobile drawer wires
+ * this to close itself; the desktop rail leaves it undefined since there's
+ * nothing to close.
  */
-export function InstrumentRail() {
+export function InstrumentRailContent({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAuth();
 
   return (
-    <nav
-      aria-label="Primary"
-      className="flex h-svh w-60 shrink-0 flex-col border-r border-surface-border bg-surface-raised"
-    >
+    <>
       <div className="flex h-14 items-center gap-2.5 border-b border-surface-border px-4">
         <BrandMark size="sm" />
         <span className="font-display text-sm font-semibold tracking-wide text-ink-primary">Chauhanmis PPC</span>
@@ -40,6 +40,7 @@ export function InstrumentRail() {
                     <NavLink
                       to={item.to}
                       end={item.to === "/"}
+                      onClick={onNavigate}
                       className={({ isActive }) =>
                         cn(
                           "flex items-center gap-2.5 rounded-sm px-2.5 py-1.5 text-sm transition-colors",
@@ -59,6 +60,25 @@ export function InstrumentRail() {
           );
         })}
       </div>
+    </>
+  );
+}
+
+/**
+ * The fixed left instrument rail — the app's primary navigation on
+ * desktop/tablet-landscape widths (lg and up), grouped by domain. See
+ * README "Design System — Layout concept" for why this is a rail, not a
+ * top navbar. Hidden below lg — MobileNav (mobile-nav.tsx) renders the
+ * same InstrumentRailContent inside a Sheet drawer there instead, since a
+ * permanently-docked 240px rail has no room to exist on a phone screen.
+ */
+export function InstrumentRail() {
+  return (
+    <nav
+      aria-label="Primary"
+      className="hidden h-svh w-60 shrink-0 flex-col border-r border-surface-border bg-surface-raised lg:flex"
+    >
+      <InstrumentRailContent />
     </nav>
   );
 }
