@@ -75,6 +75,14 @@ enum PrStatus {
   Cancelled
 }
 
+// Client Flow Part 1 — Machine master data (see README "Machine master
+// data").
+enum MachineStatus {
+  Active
+  Offline
+  Maintenance
+}
+
 // ============================================================================
 // 1. MODEL MASTER
 // ============================================================================
@@ -154,6 +162,7 @@ model ProductionLine {
   hrTeams       HrTeam[]
   schedules     ProductionSchedule[]
   dailyLogs     DailyProductionLog[]
+  machines      Machine[]
 
   @@map("production_lines")
 }
@@ -166,6 +175,36 @@ model LineProductCompatibility {
 
   @@id([lineId, productType])
   @@map("line_product_compatibility")
+}
+
+// ============================================================================
+// CLIENT FLOW PART 1 — MACHINE MASTER DATA
+//
+// We previously only tracked capacity/status at the Line level. The client's
+// detailed flow document tracks individual Machines within a Line (a Line can
+// have several) — see README "Machine master data" for the full rationale
+// and how this feeds Part 2's Daily Production Plan.
+// ============================================================================
+model Machine {
+  id               BigInt        @id @default(autoincrement())
+  machineId        String        @unique @map("machine_id")
+  machineName      String        @map("machine_name")
+  lineId           String        @map("line_id")
+  // At least one of the three capacity fields must be present — enforced at
+  // the Zod layer (see machines.schema.ts), not a DB constraint. If more
+  // than one is given, they are stored as-is with no attempt to reconcile
+  // them against each other (e.g. capacityPerShift need not equal
+  // capacityPerHour * shift hours) — see README.
+  capacityPerHour  Decimal?      @map("capacity_per_hour") @db.Decimal(10, 2)
+  capacityPerShift Decimal?      @map("capacity_per_shift") @db.Decimal(10, 2)
+  capacityPerDay   Decimal?      @map("capacity_per_day") @db.Decimal(10, 2)
+  status           MachineStatus @default(Active)
+  notes            String?
+
+  line ProductionLine @relation(fields: [lineId], references: [lineId])
+
+  @@index([lineId])
+  @@map("machines")
 }
 
 // ============================================================================
@@ -223,12 +262,18 @@ model Order {
   ctbStatus    CtbStatus? @map("ctb_status")
   ctbCheckedAt DateTime?  @map("ctb_checked_at")
 
+  // Client Flow Part 1 — free-text field for anything about this order that
+  // doesn't fit the structured columns (special packaging, client-specific
+  // labeling, etc.). Additive, optional, no other logic attached — see README.
+  specialRequirements String? @map("special_requirements")
+
   productRef      Product               @relation(fields: [sku], references: [sku])
   statusHistory   OrderStatusHistory[]
   schedules       ProductionSchedule[]
   bomRequirements OrderBomRequirement[]
   ctbShortages    OrderCtbShortage[]
   qcBatch         QcBatch?
+  dailyLogs       DailyProductionLog[]
 
   @@index([status])
   @@index([sku])
@@ -323,13 +368,27 @@ model DailyProductionLog {
   totalOutputQty Decimal? @map("total_output_qty") @db.Decimal(12, 2)
   goodQty        Decimal? @map("good_qty") @db.Decimal(12, 2)
 
+  // Client Flow Part 1. Closes the gap Module 12 documented (search's
+  // pendingQty was always null because daily logs were never linked to a
+  // specific order — see README "orderId gap-closure"). Nullable: historical
+  // rows and any non-order-specific logging remain valid.
+  orderId String? @map("order_id")
+
+  // Production team's own self-reported reject/rework figures — distinct
+  // from QC's authoritative pass/reject numbers (Part 3, not yet built). Both
+  // are kept, never merged into one, for audit/comparison — see README.
+  rejectedQty Decimal? @map("rejected_qty") @db.Decimal(12, 2)
+  reworkQty   Decimal? @map("rework_qty") @db.Decimal(12, 2)
+
   line         ProductionLine? @relation(fields: [lineId], references: [lineId])
   model        Product?        @relation(fields: [modelId], references: [modelId])
+  order        Order?          @relation(fields: [orderId], references: [orderId])
   downtimeLogs DowntimeLog[]
 
   @@index([logDate])
   @@index([lineId])
   @@index([modelId])
+  @@index([orderId])
   @@map("daily_production_log")
 }
 
@@ -437,13 +496,13 @@ model PurchaseRequisition {
 }
 
 model PrLineItem {
-  id                BigInt   @id @default(autoincrement())
-  prId              BigInt   @map("pr_id")
-  partId            String?  @map("part_id")
-  partName          String   @map("part_name")
-  totalRequiredQty  Decimal  @map("total_required_qty") @db.Decimal(12, 3)
-  currentStockQty   Decimal  @map("current_stock_qty") @db.Decimal(12, 3)
-  netRequirementQty Decimal  @map("net_requirement_qty") @db.Decimal(12, 3)
+  id                BigInt  @id @default(autoincrement())
+  prId              BigInt  @map("pr_id")
+  partId            String? @map("part_id")
+  partName          String  @map("part_name")
+  totalRequiredQty  Decimal @map("total_required_qty") @db.Decimal(12, 3)
+  currentStockQty   Decimal @map("current_stock_qty") @db.Decimal(12, 3)
+  netRequirementQty Decimal @map("net_requirement_qty") @db.Decimal(12, 3)
 
   pr PurchaseRequisition @relation(fields: [prId], references: [id], onDelete: Cascade)
 

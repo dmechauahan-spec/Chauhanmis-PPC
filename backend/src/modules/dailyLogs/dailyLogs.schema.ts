@@ -62,6 +62,13 @@ export const createDailyLogSchema = z
     plannedMinutes: z.coerce.number().nonnegative().optional(),
     totalOutputQty: z.coerce.number().nonnegative().optional(),
     goodQty: z.coerce.number().nonnegative().optional(),
+    // Client Flow Part 1. orderId closes the Module 12 pending-qty gap — see
+    // README. rejectedQty/reworkQty are the production team's own
+    // self-reported figures, distinct from QC's authoritative numbers
+    // (Part 3, not yet built) — see README.
+    orderId: z.string().min(1).optional(),
+    rejectedQty: z.coerce.number().nonnegative().optional(),
+    reworkQty: z.coerce.number().nonnegative().optional(),
   })
   .refine(
     (data) =>
@@ -92,6 +99,10 @@ export const updateDailyLogSchema = z
     plannedMinutes: z.coerce.number().nonnegative().nullable(),
     totalOutputQty: z.coerce.number().nonnegative().nullable(),
     goodQty: z.coerce.number().nonnegative().nullable(),
+    // Client Flow Part 1 — see README.
+    orderId: z.string().min(1).nullable(),
+    rejectedQty: z.coerce.number().nonnegative().nullable(),
+    reworkQty: z.coerce.number().nonnegative().nullable(),
   })
   .partial()
   .refine((data) => Object.keys(data).length > 0, { message: 'At least one field must be provided' });

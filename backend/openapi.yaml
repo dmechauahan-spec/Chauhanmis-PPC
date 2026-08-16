@@ -36,6 +36,7 @@ tags:
   - name: Auth
   - name: Products
   - name: Lines
+  - name: Machines
   - name: HR Teams
   - name: BOM
   - name: RM Inventory
@@ -122,6 +123,29 @@ components:
           type: array
           items: { type: string }
 
+    Machine:
+      type: object
+      description: >
+        Client Flow Part 1. Per-Machine tracking within a Line (a Line can have several) — see
+        README "Client Flow Part 1". At least one of capacityPerHour/capacityPerShift/capacityPerDay
+        must be provided (Zod-layer validation, not a DB constraint).
+      properties:
+        machineId: { type: string, example: M-01 }
+        machineName: { type: string }
+        lineId: { type: string }
+        capacityPerHour: { type: number, nullable: true }
+        capacityPerShift: { type: number, nullable: true }
+        capacityPerDay: { type: number, nullable: true }
+        status: { type: string, enum: [Active, Offline, Maintenance] }
+        notes: { type: string, nullable: true }
+        line:
+          type: object
+          readOnly: true
+          description: Parent line's basic info, included so the UI doesn't need a second lookup.
+          properties:
+            lineId: { type: string }
+            lineName: { type: string }
+
     HrTeam:
       type: object
       properties:
@@ -175,6 +199,11 @@ components:
           type: string
           enum: [Open, PendingRM, Scheduled, Running, QC, DispatchReady, Closed]
         createdAt: { type: string, format: date-time }
+        specialRequirements:
+          type: string
+          nullable: true
+          description: >
+            Client Flow Part 1. Free-text, no other logic attached — see README "Client Flow Part 1".
 
     OrderStatusHistory:
       type: object
@@ -244,6 +273,24 @@ components:
           type: number
           nullable: true
           description: Units that passed quality. Must be <= totalOutputQty.
+        orderId:
+          type: string
+          nullable: true
+          description: >
+            Client Flow Part 1. Links this log to a specific order — closes the gap Module 12
+            documented (search's pendingQty was always null). Validated against orders if
+            provided; does not itself change GET /search's pendingQty behavior. See README
+            "Client Flow Part 1".
+        rejectedQty:
+          type: number
+          nullable: true
+          description: >
+            Client Flow Part 1. Production team's own self-reported reject count — distinct from
+            QC's authoritative numbers (Part 3, not yet built). See README "Client Flow Part 1".
+        reworkQty:
+          type: number
+          nullable: true
+          description: Client Flow Part 1. Production team's own self-reported rework count — see rejectedQty.
         downtimeEntries:
           type: array
           items: { $ref: '#/components/schemas/DowntimeEntry' }
@@ -1246,6 +1293,58 @@ paths:
         '400': { description: Blocked by references from HR/schedule/daily log }
         '404': { description: Not found }
 
+  /machines:
+    get:
+      tags: [Machines]
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: status
+          in: query
+          schema: { type: string, enum: [Active, Offline, Maintenance] }
+        - name: lineId
+          in: query
+          schema: { type: string }
+      responses:
+        '200': { description: Paginated list of machines, each including its parent line's basic info }
+    post:
+      tags: [Machines]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Machine' }
+      responses:
+        '201': { description: Created }
+        '400': { description: 'Validation error: unknown lineId, or no capacity field provided' }
+
+  /machines/{machineId}:
+    parameters:
+      - name: machineId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Machines]
+      responses:
+        '200': { description: Machine, including its parent line's basic info }
+        '404': { description: Not found }
+    patch:
+      tags: [Machines]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Machine' }
+      responses:
+        '200': { description: Updated }
+        '400': { description: 'Unknown lineId, or would null out all three capacity fields at once' }
+        '404': { description: Not found }
+    delete:
+      tags: [Machines]
+      responses:
+        '200': { description: Deleted }
+        '404': { description: Not found }
+
   /hr-teams:
     get:
       tags: [HR Teams]
@@ -1483,6 +1582,9 @@ paths:
                 qty: { type: integer }
                 dueDate: { type: string, format: date }
                 priority: { type: string, enum: [Low, Medium, High] }
+                specialRequirements:
+                  type: string
+                  description: Client Flow Part 1. Optional free-text — see README "Client Flow Part 1".
               required: [orderId, client, sku, qty]
       responses:
         '201': { description: 'Created (status always starts at Open; product is snapshotted from the SKU''s productType)' }
@@ -1498,6 +1600,23 @@ paths:
       tags: [Orders]
       responses:
         '200': { description: Order }
+        '404': { description: Not found }
+    patch:
+      tags: [Orders]
+      summary: >
+        Client Flow Part 1. General field update, separate from the dedicated status-transition
+        endpoint below — currently covers specialRequirements only, and never touches status.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                specialRequirements: { type: string, nullable: true }
+      responses:
+        '200': { description: Updated }
+        '400': { description: Validation error }
         '404': { description: Not found }
     delete:
       tags: [Orders]
@@ -1592,7 +1711,7 @@ paths:
           description: >
             Created. logId is always server-generated (DL-YYYYMMDD-NN); absentEmployees and
             attendancePct are always server-computed and ignore any client-sent value.
-        '400': { description: Validation error (unknown lineId/modelId, presentEmployees > totalEmployees, missing notes on reason=Other, ...) }
+        '400': { description: Validation error (unknown lineId/modelId/orderId, presentEmployees > totalEmployees, missing notes on reason=Other, ...) }
 
   /daily-logs/{logId}:
     parameters:

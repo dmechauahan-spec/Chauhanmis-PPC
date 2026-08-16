@@ -91,6 +91,17 @@ async function getModelOrThrow(modelId: string) {
   return product;
 }
 
+// Client Flow Part 1 — closes the gap Module 12 documented ("Production-to-
+// order linkage not yet implemented"): validates the linked order exists
+// before a daily log is allowed to reference it. See README.
+async function getOrderOrThrow(orderId: string) {
+  const order = await prisma.order.findUnique({ where: { orderId } });
+  if (!order) {
+    throw new ValidationError('Invalid orderId', { orderId: `Order '${orderId}' does not exist` });
+  }
+  return order;
+}
+
 // Same shared date-sequence-with-retry-on-collision id scheme Module 9's
 // prNumber reuses — see src/utils/sequentialIdGenerator.ts.
 async function nextLogId(logDate: Date): Promise<string> {
@@ -144,6 +155,9 @@ export async function getDailyLogById(logId: string): Promise<DailyLogOutput> {
 export async function createDailyLog(input: CreateDailyLogInput, savedBy: string): Promise<DailyLogOutput> {
   const line = input.lineId ? await getLineOrThrow(input.lineId) : null;
   const model = input.modelId ? await getModelOrThrow(input.modelId) : null;
+  if (input.orderId) {
+    await getOrderOrThrow(input.orderId);
+  }
 
   const logDate = new Date(input.logDate);
   const { absentEmployees, attendancePct } = computeDerivedAttendance(
@@ -178,6 +192,9 @@ export async function createDailyLog(input: CreateDailyLogInput, savedBy: string
             plannedMinutes,
             totalOutputQty: input.totalOutputQty,
             goodQty: input.goodQty,
+            orderId: input.orderId,
+            rejectedQty: input.rejectedQty,
+            reworkQty: input.reworkQty,
           },
         });
 
@@ -268,6 +285,10 @@ export async function updateDailyLog(
   if (input.modelId !== undefined) {
     modelNamePatch =
       input.modelId === null ? { modelName: null } : { modelName: (await getModelOrThrow(input.modelId)).modelName };
+  }
+
+  if (input.orderId) {
+    await getOrderOrThrow(input.orderId);
   }
 
   // Prisma requires the explicit Prisma.DbNull sentinel to null out a Json?

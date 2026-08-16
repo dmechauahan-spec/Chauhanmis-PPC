@@ -29,7 +29,20 @@ export const createOrderSchema = z.object({
     .refine(isTodayOrFuture, { message: 'dueDate must be today or in the future' })
     .optional(),
   priority: priorityEnum.default('Medium'),
+  // Client Flow Part 1 — free-text, no other logic attached. See README.
+  specialRequirements: z.string().optional(),
 });
+
+// Client Flow Part 1 — general field update, separate from the dedicated
+// status-transition endpoint (PATCH /:orderId/status) which has its own
+// sequential-flow rules and stays untouched by this. Currently only covers
+// specialRequirements; extend here if more freely-editable fields are added.
+export const updateOrderSchema = z
+  .object({
+    specialRequirements: z.string().nullable(),
+  })
+  .partial()
+  .refine((data) => Object.keys(data).length > 0, { message: 'At least one field must be provided' });
 
 export const listOrdersQuerySchema = paginationQuerySchema.extend({
   status: statusEnum.optional(),
@@ -47,3 +60,4 @@ export const updateOrderStatusSchema = z.object({
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;
 export type ListOrdersQuery = z.infer<typeof listOrdersQuerySchema>;
 export type UpdateOrderStatusInput = z.infer<typeof updateOrderStatusSchema>;
+export type UpdateOrderInput = z.infer<typeof updateOrderSchema>;

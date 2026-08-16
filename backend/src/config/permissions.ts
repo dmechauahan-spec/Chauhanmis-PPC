@@ -39,6 +39,7 @@ export const PERMISSIONS = {
   // --- Shared master data / cross-cutting (both roles read, only Admin writes) ---
   products: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY },
   lines: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // physical line config/engineering setup, not a day-to-day floor action — see README
+  machines: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // physical equipment config, same reasoning as Lines — see README
   shortageReport: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // read-only module — write unused
   search: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // read-only module — write unused
   dashboard: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // read-only module — write unused

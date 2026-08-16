@@ -9,6 +9,7 @@ import { withRetry } from './db/withRetry';
 import { buildCorsOptions } from './config/cors';
 import productsRouter from './modules/products/products.routes';
 import linesRouter from './modules/lines/lines.routes';
+import machinesRouter from './modules/machines/machines.routes';
 import hrRouter from './modules/hr/hr.routes';
 import bomRouter from './modules/bom/bom.routes';
 import rmInventoryRouter from './modules/rmInventory/rmInventory.routes';
@@ -54,6 +55,7 @@ export function createApp(): Express {
 
   app.use('/api/products', productsRouter);
   app.use('/api/lines', linesRouter);
+  app.use('/api/machines', machinesRouter);
   app.use('/api/hr-teams', hrRouter);
   app.use('/api/bom', bomRouter);
   app.use('/api/rm-inventory', rmInventoryRouter);

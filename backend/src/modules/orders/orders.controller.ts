@@ -30,6 +30,15 @@ export async function create(req: Request, res: Response, next: NextFunction) {
   }
 }
 
+export async function update(req: Request, res: Response, next: NextFunction) {
+  try {
+    const order = await ordersService.updateOrder(req.params.orderId, req.body);
+    sendSuccess(res, order);
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function updateStatus(req: Request, res: Response, next: NextFunction) {
   try {
     const order = await ordersService.updateOrderStatus(req.params.orderId, req.body, req.user!.name);

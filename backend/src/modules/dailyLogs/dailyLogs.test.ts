@@ -11,6 +11,7 @@ const app = buildTestApp('/api/daily-logs', dailyLogsRouter);
 const testLineId = 'TEST-LINE-DLOG-001';
 const testModelId = 'TEST-MDL-DLOG-001';
 const testSku = 'TEST-SKU-DLOG-001';
+const testOrderId = 'TEST-SO-DLOG-001';
 
 // Distinctive, far-future dates so repeat test runs never collide with real
 // usage and the log_id sequence is guaranteed to start fresh each time.
@@ -56,6 +57,9 @@ beforeAll(async () => {
       noOfStations: 5,
     },
   });
+  await prisma.order.create({
+    data: { orderId: testOrderId, client: 'Daily Log Test Client', sku: testSku, product: 'OTG', qty: 50 },
+  });
 });
 
 afterAll(async () => {
@@ -64,6 +68,7 @@ afterAll(async () => {
   await deleteLogsForDateStamp('20310315');
   await deleteLogsForDateStamp('20310316');
   await deleteLogsForDateStamp('20310317');
+  await prisma.order.deleteMany({ where: { orderId: testOrderId } });
   await prisma.productionLine.deleteMany({ where: { lineId: testLineId } });
   await prisma.product.deleteMany({ where: { modelId: testModelId } });
   await prisma.$disconnect();
@@ -230,6 +235,58 @@ describe('POST /api/daily-logs — validation', () => {
   it('rejects an unauthenticated request with 401', async () => {
     const res = await request(app).post('/api/daily-logs').send({ logDate: SEQ_DATE });
     expect(res.status).toBe(401);
+  });
+});
+
+describe('orderId / rejectedQty / reworkQty (Client Flow Part 1)', () => {
+  it('accepts a valid orderId, rejectedQty and reworkQty on create', async () => {
+    const res = await request(app).post('/api/daily-logs').set(writeHeader).send({
+      logDate: SEQ_DATE,
+      orderId: testOrderId,
+      rejectedQty: 5,
+      reworkQty: 3,
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.orderId).toBe(testOrderId);
+    expect(Number(res.body.data.rejectedQty)).toBe(5);
+    expect(Number(res.body.data.reworkQty)).toBe(3);
+  });
+
+  it('rejects an unknown orderId on create with a clear error', async () => {
+    const res = await request(app).post('/api/daily-logs').set(writeHeader).send({
+      logDate: SEQ_DATE,
+      orderId: 'DOES-NOT-EXIST',
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.message).toMatch(/Invalid orderId/);
+  });
+
+  it('creates a log with no orderId (still optional/nullable)', async () => {
+    const res = await request(app).post('/api/daily-logs').set(writeHeader).send({ logDate: SEQ_DATE });
+    expect(res.status).toBe(201);
+    expect(res.body.data.orderId).toBeNull();
+  });
+
+  it('accepts a valid orderId via PATCH, and rejects an unknown one', async () => {
+    const created = await request(app).post('/api/daily-logs').set(writeHeader).send({ logDate: SEQ_DATE });
+    const logId = created.body.data.logId;
+
+    const okRes = await request(app)
+      .patch(`/api/daily-logs/${logId}`)
+      .set(writeHeader)
+      .send({ orderId: testOrderId, rejectedQty: 2, reworkQty: 1 });
+    expect(okRes.status).toBe(200);
+    expect(okRes.body.data.orderId).toBe(testOrderId);
+    expect(Number(okRes.body.data.rejectedQty)).toBe(2);
+    expect(Number(okRes.body.data.reworkQty)).toBe(1);
+
+    const badRes = await request(app)
+      .patch(`/api/daily-logs/${logId}`)
+      .set(writeHeader)
+      .send({ orderId: 'DOES-NOT-EXIST' });
+    expect(badRes.status).toBe(400);
   });
 });
 

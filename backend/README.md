@@ -18,11 +18,20 @@ authorization** (`Admin` / `StoreManager` / `ProductionManager`) — every route
 token, and write access to each module is gated by role. See "Authentication & Authorization"
 below for the full role model, permission matrix, and rationale.
 
+Also in progress: a **5-part Client Flow addition** implementing the client's detailed PPC flow
+document on top of the 14 completed modules — Machine master data, a daily Plan-vs-Actual
+comparison, daily QC inspection results, a QC-driven completion forecast, and a formal order
+closure summary. **Part 1 (Machine master data + Order/Daily Log extensions) is complete**; Parts
+2–5 are not yet built. See "Client Flow Part 1" below.
+
 > **⚠️ Known limitation you will hit immediately if you use search:** `GET /api/search`'s order
 > results always return `pendingQty: null` — there is no schema linkage between production output
 > and a specific order today, so this cannot be honestly computed. See "Module 12" below for the
 > full explanation; this is the second-most-important caveat in this backend after Module 9's
-> consolidated-demand note.
+> consolidated-demand note. Client Flow Part 1 added the *schema* linkage this was missing
+> (`daily_production_log.orderId`, see "Client Flow Part 1" below) but did **not** change this
+> search behavior — `pendingQty` still returns `null` until a later part teaches the search
+> computation to use it.
 
 ## Tech stack
 
@@ -1441,6 +1450,74 @@ actually finished, which is what "did we deliver on time" is really asking about
 > future due date, so it can never be "delayed"), and confirms removing the at-risk order's
 > schedule row changes `atRiskCount` alone, leaving `delayedCount` completely unaffected — direct
 > proof the two counts don't secretly share a code path.
+
+### Client Flow Part 1 — Machine Master Data & Order/Daily Log Extensions
+
+The client provided a detailed production-planning flow document introducing concepts not covered
+by Modules 1–14 above: per-**Machine** tracking (previously only per-Line), a daily Plan-vs-Actual
+comparison, daily QC inspection results distinct from the existing QC Batch/traceability module,
+a QC-driven completion forecast, and a formal order closure summary. This is being built in 5
+parts; **this is Part 1**, laying the foundation Parts 2–5 build on. Nothing below should be
+mistaken for those later parts being complete.
+
+**Machine master data.** We previously only tracked capacity/status at the Line level
+(`production_lines.capPerDay`, `status`). The client's flow tracks individual **Machines** within
+a Line — a Line can have several. `machines` is a new table (`Machine` model) with `machineId`
+(client-supplied, unique), `machineName`, a required `lineId` FK to `production_lines`, three
+optional capacity fields (`capacityPerHour`, `capacityPerShift`, `capacityPerDay`), a `status`
+enum (`Active` / `Offline` / `Maintenance` — a superset of `LineStatus`, since a machine can be
+down for scheduled maintenance in a way the coarser Line-level status doesn't distinguish), and
+free-text `notes`. Full CRUD at `/api/machines`, same permission convention as Lines: read is
+`STORE_AND_PRODUCTION`, write is `Admin`-only — physical equipment configuration, same reasoning
+as why Lines write is Admin-only (see "Permission matrix" above). List/detail responses include
+the parent line's basic info (`line: { lineId, lineName }`) so the UI doesn't need a second
+lookup.
+
+At least one of the three capacity fields must be present — enforced at the Zod layer
+(`machines.schema.ts`), not a DB constraint, matching the pattern already used elsewhere in this
+codebase (e.g. Module 4's OEE fields) for validation that's about API input shape rather than data
+integrity Postgres itself should police. If more than one capacity field is given, they are stored
+exactly as provided with **no** attempt to reconcile them against each other (e.g. nothing checks
+that `capacityPerShift ≈ capacityPerHour × shift hours`) — that reconciliation, if ever wanted, is
+a distinct future feature, not implicit validation. On `PATCH`, the same "at least one" rule is
+enforced only when a single request would explicitly null out all three fields at once; a request
+that doesn't touch capacity at all, or only touches some of the three fields, is unaffected — this
+is a payload-local Zod check (no DB read to compute the post-merge state), consistent with the
+instruction that validation stays at the Zod layer.
+
+**`daily_production_log.order_id` — the Module 12 gap-closure note.** Module 12 (PPC Spotlight
+Search) explicitly documented that `daily_production_log` was never linked to a specific order, so
+`GET /api/search`'s `pendingQty` could never be honestly computed (always `null` — see "Module 12"
+above, `PENDING_QTY_NOTE`). `daily_production_log.orderId` (nullable, FK to `orders.orderId`) is
+the schema-level fix for that: `POST /api/daily-logs` and `PATCH /api/daily-logs/:logId` now both
+accept an optional `orderId`, validated against `orders` exactly like `lineId`/`modelId` already
+are (`ValidationError` with a clear message, not a silent no-op, if the order doesn't exist).
+**This is schema linkage only** — it lets new (and edited) daily log rows record which order they
+fulfilled going forward. It deliberately does **not**, by itself, change `GET /api/search`'s
+`pendingQty: null` behavior or `PENDING_QTY_NOTE` — teaching the search/pending-quantity
+computation to actually use this new linkage is follow-up work for a later part, not silently
+folded into this one. `orderId` stays nullable: historical rows and any daily log that genuinely
+isn't tied to one order (e.g. a mixed run) remain valid.
+
+**Self-reported vs. QC-verified reject/rework — read before conflating these.**
+`daily_production_log` gained two new nullable fields, `rejectedQty` and `reworkQty`. These are
+the **production team's own self-reported** figures, entered by whoever files the daily log —
+not an independently verified count. A dedicated, authoritative QC inspection result (with its own
+pass/reject numbers, entered by QC, not production) is planned for **Part 3** of this 5-part build
+and does **not exist yet**. The two are kept as separate fields on separate rows/tables by design,
+never merged into one number, precisely so a future comparison between "what production reported"
+and "what QC actually found" stays possible — merging them now would silently destroy that
+audit trail before Part 3 even exists to use it.
+
+**`orders.specialRequirements`.** A simple, optional free-text field for anything about an order
+that doesn't fit the structured columns (special packaging, client-specific labeling, etc.).
+Accepted on `POST /api/orders` (create) and the new general-purpose `PATCH /api/orders/:orderId`
+(update) — the latter is new in this part: previously `orders` only had a dedicated
+status-transition endpoint (`PATCH /api/orders/:orderId/status`, governed by the sequential
+status-flow validator — see "Module 2 amendment" above) and no route for editing any other order
+field. `PATCH /api/orders/:orderId` is deliberately narrow (currently only `specialRequirements`)
+and entirely separate from the status endpoint's transition rules — it does not touch `status` and
+the status endpoint does not touch `specialRequirements`.
 
 ## Assumptions
 

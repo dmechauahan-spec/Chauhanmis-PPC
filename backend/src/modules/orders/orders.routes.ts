@@ -8,6 +8,7 @@ import {
   createOrderSchema,
   listOrdersQuerySchema,
   orderParamsSchema,
+  updateOrderSchema,
   updateOrderStatusSchema,
 } from './orders.schema';
 
@@ -26,6 +27,12 @@ router.get(
   controller.getHistory,
 );
 router.post('/', write, validateRequest({ body: createOrderSchema }), controller.create);
+router.patch(
+  '/:orderId',
+  write,
+  validateRequest({ params: orderParamsSchema, body: updateOrderSchema }),
+  controller.update,
+);
 router.patch(
   '/:orderId/status',
   write,

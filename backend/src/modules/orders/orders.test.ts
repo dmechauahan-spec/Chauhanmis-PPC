@@ -115,6 +115,58 @@ describe('POST /api/orders', () => {
   });
 });
 
+describe('specialRequirements', () => {
+  const specialReqOrderId = 'TEST-SO-SPECIALREQ';
+
+  afterAll(async () => {
+    await prisma.order.deleteMany({ where: { orderId: specialReqOrderId } });
+  });
+
+  it('round-trips specialRequirements through create and the general PATCH endpoint', async () => {
+    const dueDate = new Date();
+    dueDate.setDate(dueDate.getDate() + 7);
+
+    const createRes = await request(app).post('/api/orders').set(writeHeader).send({
+      orderId: specialReqOrderId,
+      client: 'Acme Corp',
+      sku: testSku,
+      qty: 10,
+      dueDate: dueDate.toISOString().slice(0, 10),
+      specialRequirements: 'Ship in anti-static bags',
+    });
+    expect(createRes.status).toBe(201);
+    expect(createRes.body.data.specialRequirements).toBe('Ship in anti-static bags');
+
+    const updateRes = await request(app)
+      .patch(`/api/orders/${specialReqOrderId}`)
+      .set(writeHeader)
+      .send({ specialRequirements: 'Updated: label in French' });
+    expect(updateRes.status).toBe(200);
+    expect(updateRes.body.data.specialRequirements).toBe('Updated: label in French');
+
+    const clearRes = await request(app)
+      .patch(`/api/orders/${specialReqOrderId}`)
+      .set(writeHeader)
+      .send({ specialRequirements: null });
+    expect(clearRes.status).toBe(200);
+    expect(clearRes.body.data.specialRequirements).toBeNull();
+  });
+
+  it('creates an order with no specialRequirements (optional field)', async () => {
+    const res = await request(app).get(`/api/orders/${testOrderId}`).set(readOnlyHeader);
+    expect(res.status).toBe(200);
+    expect(res.body.data.specialRequirements).toBeNull();
+  });
+
+  it('returns 404 for the general PATCH on an unknown orderId', async () => {
+    const res = await request(app)
+      .patch('/api/orders/DOES-NOT-EXIST')
+      .set(writeHeader)
+      .send({ specialRequirements: 'x' });
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('GET /api/orders', () => {
   it('filters by client and sorts by createdAt', async () => {
     const res = await request(app)

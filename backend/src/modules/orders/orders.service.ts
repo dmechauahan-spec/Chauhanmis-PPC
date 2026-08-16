@@ -3,7 +3,7 @@ import { prisma } from '../../db/client';
 import { BusinessRuleError, NotFoundError, ValidationError } from '../../utils/errors';
 import { buildPaginated, PaginatedResult } from '../../utils/apiResponse';
 import { toSkipTake } from '../../utils/pagination';
-import { CreateOrderInput, ListOrdersQuery, UpdateOrderStatusInput } from './orders.schema';
+import { CreateOrderInput, ListOrdersQuery, UpdateOrderInput, UpdateOrderStatusInput } from './orders.schema';
 
 // Sequential flow enforced by the dedicated status-transition endpoint — no
 // skipping states and no moving backwards.
@@ -79,8 +79,14 @@ export async function createOrder(data: CreateOrderInput): Promise<OrderResult> 
       qty: data.qty,
       dueDate: data.dueDate ? new Date(data.dueDate) : undefined,
       priority: data.priority,
+      specialRequirements: data.specialRequirements,
     },
   });
+}
+
+export async function updateOrder(orderId: string, data: UpdateOrderInput): Promise<OrderResult> {
+  await getOrderById(orderId);
+  return prisma.order.update({ where: { orderId }, data });
 }
 
 export async function updateOrderStatus(
