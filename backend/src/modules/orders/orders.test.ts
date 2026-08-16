@@ -14,6 +14,16 @@ const testOrderId = 'TEST-SO-001';
 const secondOrderId = 'TEST-SO-002';
 const thirdOrderId = 'TEST-SO-003';
 
+// Client Flow Part 4B fixtures — dated relative to REAL today, since the
+// closure hook stamps actualCompletionDate as new Date() at call time.
+function utcMidnight(d: Date): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+const REAL_TODAY = utcMidnight(new Date());
+function daysFromToday(n: number): Date {
+  return new Date(REAL_TODAY.getTime() + n * 86_400_000);
+}
+
 let writeHeader: { Authorization: string }; // ProductionManager
 let writeUserName: string;
 let readOnlyHeader: { Authorization: string }; // StoreManager
@@ -278,5 +288,130 @@ describe('DELETE /api/orders/:orderId', () => {
 
     const res = await request(app).delete(`/api/orders/${secondOrderId}`).set(writeHeader);
     expect(res.status).toBe(200);
+  });
+});
+
+describe('Closure summary (Client Flow Part 4B)', () => {
+  const closureOrderId = 'TEST-SO-CLOSURE-001';
+  const closureLineId = 'TEST-LINE-CLOSURE-001';
+  const closureLogIds = ['TEST-DL-CLOSURE-01', 'TEST-DL-CLOSURE-02'];
+
+  beforeAll(async () => {
+    await prisma.productionLine.create({
+      data: { lineId: closureLineId, lineName: 'Closure Test Line', maxWorkers: 10, efficiencyPct: 90 },
+    });
+    await prisma.order.create({
+      data: {
+        orderId: closureOrderId,
+        client: 'Closure Test Client',
+        sku: testSku,
+        product: 'Air Fryer',
+        qty: 300,
+        dueDate: daysFromToday(10),
+      },
+    });
+    // Planned to finish 2 days ago -> closing "today" should compute delayDays: 2.
+    await prisma.productionSchedule.create({
+      data: {
+        orderId: closureOrderId,
+        client: 'Closure Test Client',
+        sku: testSku,
+        product: 'Air Fryer',
+        qty: 300,
+        lineId: closureLineId,
+        lineName: 'Closure Test Line',
+        dailyOutput: 150,
+        startDate: daysFromToday(-5),
+        estEndDate: daysFromToday(-2),
+        dueDate: daysFromToday(10),
+        status: 'OnTrack',
+      },
+    });
+    await prisma.dailyProductionLog.create({
+      data: { logId: closureLogIds[0], logDate: daysFromToday(-4), orderId: closureOrderId, totalOutputQty: 150, savedBy: 'fixture' },
+    });
+    await prisma.dailyProductionLog.create({
+      data: { logId: closureLogIds[1], logDate: daysFromToday(-3), orderId: closureOrderId, totalOutputQty: 150, savedBy: 'fixture' },
+    });
+    // 300 produced, 270 passed, 20 rejected, 10 rework — sums exactly to producedQty.
+    await prisma.dailyQcInspection.create({
+      data: {
+        orderId: closureOrderId,
+        inspectionDate: daysFromToday(-3),
+        producedQty: 300,
+        passedQty: 270,
+        rejectedQty: 20,
+        reworkQty: 10,
+        qcStatus: 'PartialPass',
+        inspectorName: 'fixture',
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await prisma.orderClosureSummary.deleteMany({ where: { orderId: closureOrderId } });
+    await prisma.dailyQcInspection.deleteMany({ where: { orderId: closureOrderId } });
+    await prisma.dailyProductionLog.deleteMany({ where: { logId: { in: closureLogIds } } });
+    await prisma.orderStatusHistory.deleteMany({ where: { orderId: closureOrderId } });
+    await prisma.productionSchedule.deleteMany({ where: { orderId: closureOrderId } });
+    await prisma.order.deleteMany({ where: { orderId: closureOrderId } });
+    await prisma.productionLine.deleteMany({ where: { lineId: closureLineId } });
+  });
+
+  it('returns 404 with a clear "not closed yet" message before the order reaches Closed', async () => {
+    const res = await request(app).get(`/api/orders/${closureOrderId}/closure-summary`).set(readOnlyHeader);
+    expect(res.status).toBe(404);
+    expect(res.body.error.message).toMatch(/has not been closed yet/);
+  });
+
+  it('returns 404 with a plain "not found" message for a genuinely unknown orderId (distinct from "not closed yet")', async () => {
+    const res = await request(app).get('/api/orders/DOES-NOT-EXIST/closure-summary').set(readOnlyHeader);
+    expect(res.status).toBe(404);
+    expect(res.body.error.message).toMatch(/not found/);
+    expect(res.body.error.message).not.toMatch(/closed/);
+  });
+
+  it('accepts delayReason/finalRemarks on a non-Closed transition without persisting them anywhere', async () => {
+    const res = await request(app)
+      .patch(`/api/orders/${thirdOrderId}/status`)
+      .set(writeHeader)
+      .send({ newStatus: 'Running', delayReason: 'irrelevant here', finalRemarks: 'also irrelevant' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe('Running');
+
+    const summary = await prisma.orderClosureSummary.findUnique({ where: { orderId: thirdOrderId } });
+    expect(summary).toBeNull();
+  });
+
+  it('captures a correct closure summary automatically on the DispatchReady -> Closed transition, with delayReason/finalRemarks round-tripped', async () => {
+    for (const newStatus of ['PendingRM', 'Scheduled', 'Running', 'QC', 'DispatchReady']) {
+      const res = await request(app).patch(`/api/orders/${closureOrderId}/status`).set(writeHeader).send({ newStatus });
+      expect(res.status).toBe(200);
+    }
+
+    const closeRes = await request(app)
+      .patch(`/api/orders/${closureOrderId}/status`)
+      .set(writeHeader)
+      .send({
+        newStatus: 'Closed',
+        delayReason: 'Machine breakdown mid-run',
+        finalRemarks: 'Recovered fully, quality unaffected',
+      });
+    expect(closeRes.status).toBe(200);
+    expect(closeRes.body.data.status).toBe('Closed');
+
+    const summaryRes = await request(app).get(`/api/orders/${closureOrderId}/closure-summary`).set(readOnlyHeader);
+    expect(summaryRes.status).toBe(200);
+    expect(summaryRes.body.data.orderId).toBe(closureOrderId);
+    expect(Number(summaryRes.body.data.totalOrderedQty)).toBe(300);
+    expect(Number(summaryRes.body.data.totalProducedQty)).toBe(300);
+    expect(Number(summaryRes.body.data.totalQcPassedQty)).toBe(270);
+    expect(Number(summaryRes.body.data.totalRejectedQty)).toBe(20);
+    expect(Number(summaryRes.body.data.totalReworkQty)).toBe(10);
+    expect(summaryRes.body.data.delayDays).toBe(2);
+    expect(summaryRes.body.data.delayReason).toBe('Machine breakdown mid-run');
+    expect(summaryRes.body.data.finalRemarks).toBe('Recovered fully, quality unaffected');
+    expect(summaryRes.body.data.plannedCompletionDate.slice(0, 10)).toBe(daysFromToday(-2).toISOString().slice(0, 10));
+    expect(summaryRes.body.data.actualCompletionDate.slice(0, 10)).toBe(REAL_TODAY.toISOString().slice(0, 10));
   });
 });

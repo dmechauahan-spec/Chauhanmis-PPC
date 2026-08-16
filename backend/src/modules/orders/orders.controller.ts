@@ -57,6 +57,15 @@ export async function getHistory(req: Request, res: Response, next: NextFunction
   }
 }
 
+export async function getClosureSummary(req: Request, res: Response, next: NextFunction) {
+  try {
+    const summary = await ordersService.getOrderClosureSummary(req.params.orderId);
+    sendSuccess(res, summary);
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function remove(req: Request, res: Response, next: NextFunction) {
   try {
     await ordersService.deleteOrder(req.params.orderId);

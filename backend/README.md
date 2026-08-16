@@ -22,10 +22,12 @@ Also in progress: a **5-part Client Flow addition** implementing the client's de
 document on top of the 14 completed modules — Machine master data, a daily Plan-vs-Actual
 comparison, daily QC inspection results, a QC-driven completion forecast, and a formal order
 closure summary. **Parts 1 (Machine master data + Order/Daily Log extensions), 2 (Daily Production
-Plan + Plan vs. Actual), and 3 (Daily QC Inspection) are complete**; Parts 4–5 are not yet built.
-See "Client Flow Part 1", "Client Flow Part 2", and "Client Flow Part 3" below — Part 3 in
-particular is worth reading before touching either QC module, since it explains how "QC Batches"
-(Module 13) and "QC Inspections" (Part 3) are unrelated despite the shared name.
+Plan + Plan vs. Actual), 3 (Daily QC Inspection), and 4 (QC-Adjusted Completion Forecast + Order
+Closure Summary) are complete**; Part 5 is not yet built. See "Client Flow Part 1" through "Client
+Flow Part 4" below — Part 3 is worth reading before touching either QC module (explains how "QC
+Batches" (Module 13) and "QC Inspections" (Part 3) are unrelated despite the shared name), and
+Part 4 is worth reading before touching either completion-prediction endpoint (explains how it and
+Module 11's At-Risk prediction are two different, deliberately separate signals).
 
 > **⚠️ Known limitation you will hit immediately if you use search:** `GET /api/search`'s order
 > results always return `pendingQty: null` — there is no schema linkage between production output
@@ -1713,6 +1715,120 @@ specifically so Part 4 can call it directly instead of re-deriving the same sums
 through, this means `Admin` and `ProductionManager` can record inspections, `StoreManager` is
 read-only. Identical to QC Batches' (Module 13) permission shape, for the same reason: this is the
 same floor/quality domain, and `StoreManager` doesn't write QC data of either kind.
+
+### Client Flow Part 4 — QC-Adjusted Completion Forecast & Order Closure Summary
+
+**Part 4** of the 5-part Client Flow addition (see "Client Flow Part 1" above). Two independent
+pieces: Part A projects when an order will actually finish based on real QC-accepted output; Part
+B automatically captures a permanent closing snapshot the moment an order reaches `Closed`.
+
+#### Part A — QC-Adjusted Completion Forecast
+
+> **⚠️ This is NOT Module 11's At-Risk/On-Track prediction. Read this before conflating the two.**
+>
+> - **Module 11 (Risk Prediction Engine)** is **schedule-based**: it reads `slackDays` from
+>   `production_schedule` (planned dates vs. `dueDate`) — it never looks at what was actually
+>   produced. An order can look `'On Track'` there while nothing has actually been produced yet.
+> - **The QC-Adjusted Completion Forecast (Part 4A, here)** is **QC-acceptance-based**: it
+>   projects forward from *actual accepted (QC-passed) production so far*. A schedule can look
+>   On Track while real accepted output is quietly falling behind, or an order behind on paper can
+>   be catching up fast on the floor — these are genuinely different, complementary signals, not
+>   two views of the same number.
+>
+> The two are kept **completely separate** on purpose: different endpoints
+> (`/api/risk/at-risk-orders` vs. `/api/production-plan/:orderId/completion-forecast`), different
+> modules, and deliberately different response vocabulary — `isDelayedByForecast: boolean` here,
+> never Module 11's `'On Track'`/`'At Risk'` string literals — specifically so a UI showing both
+> side by side can never visually blur them into one signal.
+
+**The formula (`completionForecast.ts`'s `computeCompletionForecast`, pure and unit-tested).**
+
+1. `balanceQty = order.qty − acceptedProductionQty` — `acceptedProductionQty` comes directly from
+   Part 3's `getQcInspectionSummary(orderId)`, called as-is (not recomputed) per this part's own
+   instruction.
+2. `currentAvgDailyAccepted = (sum of passedQty across the trailing window) ÷
+   COMPLETION_FORECAST_WINDOW_DAYS` (= **7**, `completionForecast.ts`). A recent-trend window, not
+   the whole order-to-date average — a whole-history average reacts too slowly to a recent
+   slowdown or speedup (a line down for the last 3 days would still show a healthy multi-week
+   average). 7 days is long enough to smooth over one bad or exceptional day, short enough to
+   actually react to a real trend change within about a week. Tunable, not validated-optimal.
+3. `remainingProductionDays = balanceQty ÷ currentAvgDailyAccepted` — **divide-by-zero guarded**:
+   if there's no accepted production at all in the window, this returns `null` with a
+   `noDataReason` string, never `Infinity`/`NaN`/a crash.
+4. `expectedCompletionDate = today + ceil(remainingProductionDays)` — the fractional day count is
+   rounded **up** for the date itself (never claim completion sooner than the math supports), while
+   `remainingProductionDays` in the response keeps the precise fractional value for display.
+5. `isDelayedByForecast = expectedCompletionDate > order.dueDate` (`null` if the order has no
+   `dueDate` to compare against, or no forecast could be computed at all).
+
+**Two edge cases worth knowing about**, both covered directly in `completionForecast.test.ts`:
+- **No dueDate at all**: `isDelayedByForecast: null` — there's nothing to be "delayed" relative to.
+- **`balanceQty <= 0` (order already fully accepted, possibly over-produced)**: checked *before*
+  the divide-by-zero guard, deliberately. An order that finished production days ago will
+  legitimately show zero QC activity in the trailing window — that must read as "already done"
+  (`remainingProductionDays: 0`, `expectedCompletionDate: today`), not as the unrelated "no data to
+  project from" case, even though both start from `currentAvgDailyAccepted` being effectively zero.
+
+**`GET /api/production-plan/:orderId/completion-forecast`** — lives in the `productionPlan` module
+folder from Part 2 (conceptually part of the same "how is this order actually progressing" story,
+not a new module for one endpoint). Returns `{ orderId, balanceQty, currentAvgDailyAccepted,
+remainingProductionDays, expectedCompletionDate, dueDate, isDelayedByForecast, windowDaysUsed,
+noDataReason? }` — always `200`, even in the no-recent-data case (a `noDataReason` string in an
+otherwise-null-fielded response, not an error). Read permission matches Module 10/11's convention
+(`STORE_AND_PRODUCTION`, i.e. all roles) — reuses `productionPlan`'s existing `read` middleware, no
+new permissions-table entry needed.
+
+#### Part B — Order Closure Summary
+
+**`order_closure_summaries` — one row per order, written exactly once, only by the system.** Never
+created or edited directly by a user; the only write path is the automatic capture described below.
+`totalOrderedQty`/`totalProducedQty`/`totalQcPassedQty`/`totalRejectedQty`/`totalReworkQty` are
+permanent point-in-time totals as of closure (not live-recomputed later), `plannedCompletionDate`
+is the schedule's `estEndDate` if one ever existed (`null` otherwise), `actualCompletionDate` is
+stamped from the moment the `Closed` transition is processed, and `delayDays` is **signed**:
+positive means closed after `plannedCompletionDate` (late), negative means closed early, `null`
+only when there was never a schedule to compare against.
+
+**Automatic capture on `DispatchReady → Closed`, hooked into Module 2's existing transition —
+same pattern as Module 9's `Fulfilled → stock-credit` hook.** `orders.service.ts`'s
+`updateOrderStatus` already wraps the status update + `order_status_history` write in one
+`prisma.$transaction`; `createOrderClosureSummary` is called from inside that same transaction
+whenever `input.newStatus === 'Closed'` — mirroring exactly how `purchaseRequisitions.service.ts`'s
+`updatePrStatus` calls `adjustStock(..., tx)` inline when `input.newStatus === PrStatus.Fulfilled`.
+This only ever fires once per order: `Closed` is terminal in `STATUS_FLOW` (no allowed next state)
+and is reachable *only* from `DispatchReady` (it never appears in `EXTRA_ALLOWED_TRANSITIONS`), so
+by the time this hook runs, the transition itself has already been validated as the one and only
+path that can reach `Closed`.
+
+**Reusing Part 3's summary math from inside a transaction — an added `db` parameter, not a
+duplicate implementation.** `getQcInspectionSummary` (Part 3) now takes an optional second
+parameter, `db: PrismaTransactionClient = prisma` — the exact same optional-transaction-client
+convention `rmInventory.service.ts`'s `adjustStock` already established. Part 4A's read-only
+forecast endpoint calls it with no second argument (its own transaction, or none, doesn't matter —
+there's no atomicity requirement on a plain `GET`). Part 4B's closure hook calls
+`getQcInspectionSummary(order.orderId, tx)`, passing its own transaction client through, so that
+read participates in the exact same transaction as the `order_closure_summaries` write — no
+separate, un-atomic read outside the transaction, and no second copy of the summing logic to drift
+out of sync with Part 3's original. `totalProducedQty` (summed from `daily_production_log`, not
+part of Part 3's summary) is aggregated the same way, directly via `tx.dailyProductionLog.aggregate`.
+
+**`delayReason`/`finalRemarks` — accepted generally, persisted only on `Closed`.** Rather than a
+discriminated-union schema that only allows these fields when `newStatus: 'Closed'`,
+`updateOrderStatusSchema` accepts them unconditionally as optional strings on every status
+transition — the simplest possible shape. `updateOrderStatus` only ever reads and stores them
+inside the `input.newStatus === 'Closed'` branch; sent alongside any other transition, they're
+accepted by validation but have **no effect anywhere** — not stored, not logged, not rejected. This
+was a deliberate choice over the stricter, more complex schema: the failure mode of "harmlessly
+ignored on the wrong transition" was judged less surprising for a caller than a validation error on
+a field that's optional everywhere else.
+
+**`GET /api/orders/:orderId/closure-summary`** — `404` with **two distinguishable messages**: a
+genuinely unknown `orderId` reads "Order 'X' not found" (the standard `NotFoundError` shape used
+everywhere else in this codebase); an order that exists but hasn't reached `Closed` yet reads "...
+has not been closed yet — no closure summary exists," pointing at the fact that a summary is
+captured automatically on closure rather than looking like a generic missing-record error. Read
+permission follows Orders' own convention (`STORE_AND_PRODUCTION`, all roles) — the summary is
+system-written, but reading it is exactly as open as reading the order itself.
 
 ## Assumptions
 

@@ -1,8 +1,10 @@
 import { OrderStatus, Prisma } from '@prisma/client';
-import { prisma } from '../../db/client';
-import { BusinessRuleError, NotFoundError, ValidationError } from '../../utils/errors';
+import { prisma, PrismaTransactionClient } from '../../db/client';
+import { AppError, BusinessRuleError, NotFoundError, ValidationError } from '../../utils/errors';
 import { buildPaginated, PaginatedResult } from '../../utils/apiResponse';
 import { toSkipTake } from '../../utils/pagination';
+import { diffDaysUTC } from '../scheduling/schedulingEngine';
+import { getQcInspectionSummary } from '../qcInspection/qcInspection.service';
 import { CreateOrderInput, ListOrdersQuery, UpdateOrderInput, UpdateOrderStatusInput } from './orders.schema';
 
 // Sequential flow enforced by the dedicated status-transition endpoint — no
@@ -89,6 +91,59 @@ export async function updateOrder(orderId: string, data: UpdateOrderInput): Prom
   return prisma.order.update({ where: { orderId }, data });
 }
 
+// Client Flow Part 4B. Fires exactly once per order — Closed is a terminal
+// state in STATUS_FLOW (getAllowedNextStatuses returns [] for it), and the
+// only path that ever reaches Closed is DispatchReady -> Closed (Closed
+// appears nowhere in EXTRA_ALLOWED_TRANSITIONS), so this is only ever called
+// from that one transition having already been validated as allowed by the
+// caller. Same hook-into-transition shape as Module 9's Fulfilled ->
+// stock-credit hook in purchaseRequisitions.service.ts (extra work performed
+// inside the SAME transaction as the status write, gated on
+// `input.newStatus === <target>`) — see README "Client Flow Part 4".
+async function createOrderClosureSummary(
+  tx: PrismaTransactionClient,
+  order: OrderResult,
+  input: UpdateOrderStatusInput,
+): Promise<void> {
+  const producedAgg = await tx.dailyProductionLog.aggregate({
+    where: { orderId: order.orderId },
+    _sum: { totalOutputQty: true },
+  });
+  const totalProducedQty = Number(producedAgg._sum.totalOutputQty ?? 0);
+
+  // Reuses Part 3's getQcInspectionSummary formula, passed `tx` so this read
+  // participates in the same transaction as the write below — see that
+  // function's own comment in qcInspection.service.ts.
+  const qcSummary = await getQcInspectionSummary(order.orderId, tx);
+
+  const schedule = await tx.productionSchedule.findUnique({ where: { orderId: order.orderId } });
+  const plannedCompletionDate = schedule?.estEndDate ?? null;
+  const actualCompletionDate = new Date();
+  // Signed: positive = closed after plannedCompletionDate (late), negative =
+  // closed early. Null only when there was never a schedule to compare
+  // against.
+  const delayDays = plannedCompletionDate ? diffDaysUTC(actualCompletionDate, plannedCompletionDate) : null;
+
+  await tx.orderClosureSummary.create({
+    data: {
+      orderId: order.orderId,
+      totalOrderedQty: order.qty,
+      totalProducedQty,
+      totalQcPassedQty: qcSummary.totalPassedQty,
+      totalRejectedQty: qcSummary.totalRejectedQty,
+      totalReworkQty: qcSummary.totalReworkQty,
+      plannedCompletionDate,
+      actualCompletionDate,
+      delayDays,
+      // Accepted generally on the status-transition schema but only ever
+      // persisted here, on the Closed transition itself — see
+      // orders.schema.ts's updateOrderStatusSchema comment.
+      delayReason: input.delayReason,
+      finalRemarks: input.finalRemarks,
+    },
+  });
+}
+
 export async function updateOrderStatus(
   orderId: string,
   input: UpdateOrderStatusInput,
@@ -122,6 +177,10 @@ export async function updateOrderStatus(
       },
     });
 
+    if (input.newStatus === OrderStatus.Closed) {
+      await createOrderClosureSummary(tx, updated, input);
+    }
+
     return updated;
   });
 }
@@ -141,4 +200,23 @@ export async function deleteOrder(orderId: string): Promise<void> {
     );
   }
   await prisma.order.delete({ where: { orderId } });
+}
+
+type OrderClosureSummaryResult = Awaited<ReturnType<typeof prisma.orderClosureSummary.findUniqueOrThrow>>;
+
+// Client Flow Part 4B. Only ever written by the system (createOrderClosureSummary
+// above, on the Closed transition) — never directly by a user. 404 with a
+// clear "not closed yet" message (not a generic 404) when the order exists
+// but hasn't reached Closed. See README "Client Flow Part 4".
+export async function getOrderClosureSummary(orderId: string): Promise<OrderClosureSummaryResult> {
+  await getOrderById(orderId);
+
+  const summary = await prisma.orderClosureSummary.findUnique({ where: { orderId } });
+  if (!summary) {
+    throw new AppError(
+      `Order '${orderId}' has not been closed yet — no closure summary exists. A summary is captured automatically when the order transitions to 'Closed'.`,
+      404,
+    );
+  }
+  return summary;
 }

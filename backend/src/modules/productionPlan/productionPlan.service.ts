@@ -1,7 +1,9 @@
 import { prisma } from '../../db/client';
 import { AppError, BusinessRuleError, NotFoundError } from '../../utils/errors';
-import { addDaysUTC, diffDaysUTC } from '../scheduling/schedulingEngine';
+import { addDaysUTC, diffDaysUTC, startOfDayUTC } from '../scheduling/schedulingEngine';
+import { getQcInspectionSummary } from '../qcInspection/qcInspection.service';
 import { distributeDailyPlanQty } from './planDistributor';
+import { COMPLETION_FORECAST_WINDOW_DAYS, computeCompletionForecast } from './completionForecast';
 
 async function getOrderOrThrow(orderId: string) {
   const order = await prisma.order.findUnique({ where: { orderId } });
@@ -210,4 +212,50 @@ export async function getPlanVsActual(orderId: string): Promise<PlanVsActualResu
     days,
     summary: { cumulativePlannedQty, cumulativeActualQty, overallAchievementPct },
   };
+}
+
+export interface CompletionForecastOutput {
+  orderId: string;
+  balanceQty: number;
+  currentAvgDailyAccepted: number;
+  remainingProductionDays: number | null;
+  expectedCompletionDate: Date | null;
+  dueDate: Date | null;
+  isDelayedByForecast: boolean | null;
+  windowDaysUsed: number;
+  noDataReason?: string;
+}
+
+// Client Flow Part 4A — the QC-Adjusted Completion Forecast. Deliberately
+// distinct from Module 11's schedule-based (slackDays) At-Risk prediction —
+// see completionForecast.ts's header and README "Client Flow Part 4" for
+// why these are two separate, complementary signals kept apart. Reuses Part
+// 3's getQcInspectionSummary directly for acceptedProductionQty (per
+// README: "call that service function directly, don't recompute") — this is
+// a read-only GET with no transactional-atomicity requirement, unlike Part
+// 4B's closure-summary hook, which recomputes the equivalent sums itself
+// inside its own transaction instead (see orders.service.ts).
+export async function getCompletionForecast(orderId: string): Promise<CompletionForecastOutput> {
+  const order = await getOrderOrThrow(orderId);
+  const summary = await getQcInspectionSummary(orderId);
+
+  const windowEnd = startOfDayUTC(new Date());
+  const windowStart = addDaysUTC(windowEnd, -(COMPLETION_FORECAST_WINDOW_DAYS - 1));
+
+  const windowAgg = await prisma.dailyQcInspection.aggregate({
+    where: { orderId, inspectionDate: { gte: windowStart, lte: windowEnd } },
+    _sum: { passedQty: true },
+  });
+  const windowPassedQtySum = Number(windowAgg._sum.passedQty ?? 0);
+
+  const forecast = computeCompletionForecast({
+    orderQty: order.qty,
+    acceptedProductionQty: summary.acceptedProductionQty,
+    windowPassedQtySum,
+    windowDays: COMPLETION_FORECAST_WINDOW_DAYS,
+    dueDate: order.dueDate,
+    today: new Date(),
+  });
+
+  return { orderId, ...forecast };
 }

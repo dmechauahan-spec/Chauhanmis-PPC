@@ -26,6 +26,12 @@ router.get(
   validateRequest({ params: orderParamsSchema }),
   controller.getHistory,
 );
+router.get(
+  '/:orderId/closure-summary',
+  read,
+  validateRequest({ params: orderParamsSchema }),
+  controller.getClosureSummary,
+);
 router.post('/', write, validateRequest({ body: createOrderSchema }), controller.create);
 router.patch(
   '/:orderId',

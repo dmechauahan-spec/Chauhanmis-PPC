@@ -53,8 +53,18 @@ export const listOrdersQuerySchema = paginationQuerySchema.extend({
   sortDir: z.enum(['asc', 'desc']).default('desc'),
 });
 
+// Client Flow Part 4B — delayReason/finalRemarks are accepted here
+// unconditionally (not restricted to newStatus: 'Closed' via a discriminated
+// union) for the simplest possible schema shape: orders.service.ts's
+// updateOrderStatus only ever reads and persists them when the transition's
+// target status is actually Closed (into order_closure_summaries); sent
+// alongside any other transition, they're accepted by validation but
+// silently have no effect — no error, no side effect anywhere. See README
+// "Client Flow Part 4".
 export const updateOrderStatusSchema = z.object({
   newStatus: statusEnum,
+  delayReason: z.string().optional(),
+  finalRemarks: z.string().optional(),
 });
 
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;

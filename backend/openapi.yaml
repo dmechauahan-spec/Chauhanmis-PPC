@@ -217,6 +217,33 @@ components:
         changedBy: { type: string, nullable: true }
         changedAt: { type: string, format: date-time }
 
+    OrderClosureSummary:
+      type: object
+      description: >
+        Client Flow Part 4B. Written exactly once, automatically, when an order's status
+        transitions to Closed — never created or edited directly by a user. See README "Client
+        Flow Part 4".
+      properties:
+        id: { type: integer }
+        orderId: { type: string }
+        totalOrderedQty: { type: number }
+        totalProducedQty: { type: number, description: 'Sum of daily_production_log.totalOutputQty for this order (Part 1''s orderId linkage).' }
+        totalQcPassedQty: { type: number }
+        totalRejectedQty: { type: number }
+        totalReworkQty: { type: number }
+        plannedCompletionDate:
+          type: string
+          format: date
+          nullable: true
+          description: production_schedule.estEndDate if a schedule ever existed for this order, else null.
+        actualCompletionDate: { type: string, format: date, description: Stamped at the moment the Closed transition is processed. }
+        delayDays:
+          type: integer
+          nullable: true
+          description: 'Signed: positive = closed late, negative = closed early. Null only when there was no schedule to compare against.'
+        delayReason: { type: string, nullable: true }
+        finalRemarks: { type: string, nullable: true }
+
     DowntimeEntry:
       type: object
       properties:
@@ -773,6 +800,33 @@ components:
               type: number
               nullable: true
               description: Computed from cumulative sums, not an average of each day's achievementPct — same convention as Module 4's OEE aggregation.
+
+    CompletionForecastResult:
+      type: object
+      description: >
+        Client Flow Part 4A — the QC-Adjusted Completion Forecast. NOT the same as Module 11's
+        At-Risk/On-Track schedule-based prediction (AtRiskOrderRow below) — this one projects from
+        actual accepted (QC-passed) production. See README "Client Flow Part 4".
+      properties:
+        orderId: { type: string }
+        balanceQty: { type: number, description: order.qty - acceptedProductionQty (Part 3). }
+        currentAvgDailyAccepted:
+          type: number
+          description: Average passedQty per calendar day across the trailing windowDaysUsed-day window.
+        remainingProductionDays:
+          type: number
+          nullable: true
+          description: 'balanceQty / currentAvgDailyAccepted. Null only when currentAvgDailyAccepted is 0 (no recent accepted production) — see noDataReason.'
+        expectedCompletionDate: { type: string, format: date, nullable: true }
+        dueDate: { type: string, format: date, nullable: true }
+        isDelayedByForecast:
+          type: boolean
+          nullable: true
+          description: 'expectedCompletionDate > dueDate. Null if there is no dueDate, or no forecast could be computed at all.'
+        windowDaysUsed: { type: integer, example: 7, description: COMPLETION_FORECAST_WINDOW_DAYS at call time. }
+        noDataReason:
+          type: string
+          description: Present only when remainingProductionDays is null — explains why no projection could be made.
 
     AtRiskOrderRow:
       type: object
@@ -1747,6 +1801,13 @@ paths:
         schema: { type: string }
     patch:
       tags: [Orders]
+      description: >
+        Client Flow Part 4B. delayReason/finalRemarks are accepted on every transition (simplest
+        schema shape) but only ever read/persisted — into order_closure_summaries — when newStatus
+        is Closed; sent alongside any other transition they're accepted but have no effect
+        anywhere. See README "Client Flow Part 4". When newStatus is Closed, a closure summary is
+        captured automatically in the same transaction as the status write — see
+        OrderClosureSummary and GET /orders/{orderId}/closure-summary below.
       requestBody:
         required: true
         content:
@@ -1758,11 +1819,31 @@ paths:
                   type: string
                   enum: [Open, PendingRM, Scheduled, Running, QC, DispatchReady, Closed]
                 changedBy: { type: string }
+                delayReason: { type: string, description: Only persisted when newStatus is Closed. }
+                finalRemarks: { type: string, description: Only persisted when newStatus is Closed. }
               required: [newStatus]
       responses:
         '200': { description: Order moved to newStatus; order_status_history row written }
         '400': { description: Invalid transition (must follow the sequential flow) }
         '404': { description: Not found }
+
+  /orders/{orderId}/closure-summary:
+    parameters:
+      - name: orderId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Orders]
+      summary: The automatically-captured closure summary for a Closed order
+      description: Client Flow Part 4B. System-written only — see README "Client Flow Part 4".
+      responses:
+        '200':
+          description: OrderClosureSummary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderClosureSummary' }
+        '404': { description: "Unknown orderId ('not found'), or the order exists but hasn't reached Closed yet ('not been closed yet') — distinguishable messages, see README." }
 
   /orders/{orderId}/history:
     parameters:
@@ -2654,6 +2735,28 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PlanVsActualResult' }
         '404': { description: 'Unknown orderId, or no plan has been generated yet' }
+
+  /production-plan/{orderId}/completion-forecast:
+    parameters:
+      - name: orderId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Production Plan]
+      summary: QC-Adjusted Completion Forecast
+      description: >
+        Client Flow Part 4A. QC-acceptance-based projection — NOT Module 11's schedule-based
+        (slackDays) At-Risk prediction; see README "Client Flow Part 4" before conflating the two.
+        Always 200, even with no recent accepted production (CompletionForecastResult.noDataReason
+        explains why, rather than an error).
+      responses:
+        '200':
+          description: CompletionForecastResult
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CompletionForecastResult' }
+        '404': { description: Unknown orderId }
 
   /risk/at-risk-orders:
     get:

@@ -16,10 +16,24 @@ const testLineId = 'TEST-LINE-PPLAN-001';
 const scheduledOrderId = 'TEST-SO-PPLAN-SCHED';
 const noScheduleOrderId = 'TEST-SO-PPLAN-NOSCHED';
 const noPlanYetOrderId = 'TEST-SO-PPLAN-NOPLAN';
+const forecastOnTrackOrderId = 'TEST-SO-PPLAN-FORECAST-OK';
+const forecastNoDataOrderId = 'TEST-SO-PPLAN-FORECAST-NODATA';
 
 const DAY0 = new Date('2031-04-01T00:00:00.000Z');
 function daysAfter(days: number): Date {
   return new Date(DAY0.getTime() + days * 86_400_000);
+}
+
+// The completion-forecast endpoint anchors its "recent window" on the REAL
+// current date (new Date() inside the service), not a fixed test date — so
+// its fixtures must be dated relative to actual today, unlike every other
+// fixture in this file (which uses the fixed, far-future DAY0).
+function utcMidnight(d: Date): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+const REAL_TODAY = utcMidnight(new Date());
+function daysFromToday(n: number): Date {
+  return new Date(REAL_TODAY.getTime() + n * 86_400_000);
 }
 
 const dailyLogIds = ['TEST-DL-PPLAN-01', 'TEST-DL-PPLAN-02', 'TEST-DL-PPLAN-03'];
@@ -95,18 +109,58 @@ beforeAll(async () => {
       status: 'OnTrack',
     },
   });
+
+  // Forecast fixtures — dated relative to REAL_TODAY (see comment above).
+  await prisma.order.create({
+    data: {
+      orderId: forecastOnTrackOrderId,
+      client: 'PPlan Test Client',
+      sku: testSku,
+      product: testProductType,
+      qty: 1000,
+      dueDate: daysFromToday(30), // comfortably in the future
+    },
+  });
+  await prisma.order.create({
+    data: { orderId: forecastNoDataOrderId, client: 'PPlan Test Client', sku: testSku, product: testProductType, qty: 500 },
+  });
+  // 7 days of QC inspections (today and the 6 days before), 100 passed/day —
+  // exactly COMPLETION_FORECAST_WINDOW_DAYS. acceptedProductionQty (all-time
+  // passed) = 700 -> balanceQty = 300 -> remainingProductionDays = 3.
+  for (let i = 0; i < 7; i++) {
+    await prisma.dailyQcInspection.create({
+      data: {
+        id: BigInt(9_000_000 + i), // fixed, collision-free ids for easy cleanup
+        orderId: forecastOnTrackOrderId,
+        inspectionDate: daysFromToday(-i),
+        producedQty: 100,
+        passedQty: 100,
+        rejectedQty: 0,
+        reworkQty: 0,
+        qcStatus: 'Passed',
+        inspectorName: 'fixture',
+      },
+    });
+  }
 });
 
 afterAll(async () => {
   await prisma.downtimeLog.deleteMany({ where: { logId: { in: dailyLogIds } } });
   await prisma.dailyProductionLog.deleteMany({ where: { logId: { in: dailyLogIds } } });
+  await prisma.dailyQcInspection.deleteMany({
+    where: { orderId: { in: [forecastOnTrackOrderId, forecastNoDataOrderId] } },
+  });
   await prisma.dailyProductionPlan.deleteMany({
     where: { orderId: { in: [scheduledOrderId, noScheduleOrderId, noPlanYetOrderId] } },
   });
   await prisma.productionSchedule.deleteMany({
     where: { orderId: { in: [scheduledOrderId, noScheduleOrderId, noPlanYetOrderId] } },
   });
-  await prisma.order.deleteMany({ where: { orderId: { in: [scheduledOrderId, noScheduleOrderId, noPlanYetOrderId] } } });
+  await prisma.order.deleteMany({
+    where: {
+      orderId: { in: [scheduledOrderId, noScheduleOrderId, noPlanYetOrderId, forecastOnTrackOrderId, forecastNoDataOrderId] },
+    },
+  });
   await prisma.productionLine.deleteMany({ where: { lineId: testLineId } });
   await prisma.product.deleteMany({ where: { modelId: testModelId } });
   await prisma.$disconnect();
@@ -263,6 +317,45 @@ describe('GET /api/production-plan/:orderId/plan-vs-actual', () => {
   it('returns 404 when no plan exists yet for the order', async () => {
     const res = await request(app)
       .get(`/api/production-plan/${noPlanYetOrderId}/plan-vs-actual`)
+      .set(readOnlyHeader);
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /api/production-plan/:orderId/completion-forecast (Client Flow Part 4A)', () => {
+  it('projects an on-track completion date from 7 days of real accepted production', async () => {
+    const res = await request(app)
+      .get(`/api/production-plan/${forecastOnTrackOrderId}/completion-forecast`)
+      .set(readOnlyHeader);
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      orderId: forecastOnTrackOrderId,
+      balanceQty: 300,
+      currentAvgDailyAccepted: 100,
+      remainingProductionDays: 3,
+      isDelayedByForecast: false,
+      windowDaysUsed: 7,
+    });
+    expect(res.body.data.noDataReason).toBeUndefined();
+    expect(new Date(res.body.data.expectedCompletionDate)).toEqual(daysFromToday(3));
+  });
+
+  it('returns a clear no-data reason and null projection fields when there is no recent accepted production', async () => {
+    const res = await request(app)
+      .get(`/api/production-plan/${forecastNoDataOrderId}/completion-forecast`)
+      .set(readOnlyHeader);
+    expect(res.status).toBe(200);
+    expect(res.body.data.balanceQty).toBe(500);
+    expect(res.body.data.currentAvgDailyAccepted).toBe(0);
+    expect(res.body.data.remainingProductionDays).toBeNull();
+    expect(res.body.data.expectedCompletionDate).toBeNull();
+    expect(res.body.data.isDelayedByForecast).toBeNull();
+    expect(res.body.data.noDataReason).toMatch(/No accepted .* production recorded/);
+  });
+
+  it('returns 404 for an unknown orderId', async () => {
+    const res = await request(app)
+      .get('/api/production-plan/DOES-NOT-EXIST/completion-forecast')
       .set(readOnlyHeader);
     expect(res.status).toBe(404);
   });

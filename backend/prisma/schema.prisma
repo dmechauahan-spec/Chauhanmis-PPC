@@ -288,6 +288,7 @@ model Order {
   dailyLogs       DailyProductionLog[]
   productionPlan  DailyProductionPlan[]
   qcInspections   DailyQcInspection[]
+  closureSummary  OrderClosureSummary?
 
   @@index([status])
   @@index([sku])
@@ -625,6 +626,36 @@ model DailyQcInspection {
   @@index([orderId])
   @@index([inspectionDate])
   @@map("daily_qc_inspections")
+}
+
+// ============================================================================
+// CLIENT FLOW PART 4B — ORDER CLOSURE SUMMARY
+//
+// One row per order, captured automatically (never written directly by a
+// user) the moment its status transition reaches Closed — see
+// orders.service.ts's updateOrderStatus and README "Client Flow Part 4" for
+// the hook-into-transition pattern this follows (same shape as Module 9's
+// Fulfilled -> stock-credit hook).
+// ============================================================================
+model OrderClosureSummary {
+  id                    BigInt    @id @default(autoincrement())
+  orderId               String    @unique @map("order_id")
+  totalOrderedQty       Decimal   @map("total_ordered_qty") @db.Decimal(12, 2)
+  totalProducedQty      Decimal   @map("total_produced_qty") @db.Decimal(12, 2)
+  totalQcPassedQty      Decimal   @map("total_qc_passed_qty") @db.Decimal(12, 2)
+  totalRejectedQty      Decimal   @map("total_rejected_qty") @db.Decimal(12, 2)
+  totalReworkQty        Decimal   @map("total_rework_qty") @db.Decimal(12, 2)
+  plannedCompletionDate DateTime? @map("planned_completion_date") @db.Date
+  actualCompletionDate  DateTime  @default(now()) @map("actual_completion_date") @db.Date
+  // Signed: positive = closed after plannedCompletionDate (late), negative =
+  // closed early, null only when there was no schedule to compare against.
+  delayDays             Int?      @map("delay_days")
+  delayReason           String?   @map("delay_reason")
+  finalRemarks          String?   @map("final_remarks")
+
+  order Order @relation(fields: [orderId], references: [orderId], onDelete: Cascade)
+
+  @@map("order_closure_summaries")
 }
 
 // ============================================================================

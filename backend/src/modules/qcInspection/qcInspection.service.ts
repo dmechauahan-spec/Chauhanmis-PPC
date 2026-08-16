@@ -1,5 +1,5 @@
 import { Prisma, QcInspectionStatus } from '@prisma/client';
-import { prisma } from '../../db/client';
+import { prisma, PrismaTransactionClient } from '../../db/client';
 import { NotFoundError, ValidationError } from '../../utils/errors';
 import { buildPaginated, PaginatedResult } from '../../utils/apiResponse';
 import { toSkipTake } from '../../utils/pagination';
@@ -174,10 +174,23 @@ function round2(n: number): number {
 // Clean, reusable service function — not just an HTTP-shaped response. Part
 // 4's completion prediction calls this directly rather than re-deriving the
 // same sums itself. See README "Client Flow Part 3".
-export async function getQcInspectionSummary(orderId: string): Promise<QcInspectionSummary> {
-  await getOrderOrThrow(orderId);
+//
+// Optional `db` param (defaulting to the global `prisma` client), same
+// convention as rmInventory.service.ts's adjustStock: pass a
+// PrismaTransactionClient to have this read participate in a caller's own
+// transaction — Part 4B's order-closure hook uses this so its closure
+// summary (computed from these same sums) is captured atomically with the
+// status write, rather than as a separate read outside that transaction.
+export async function getQcInspectionSummary(
+  orderId: string,
+  db: PrismaTransactionClient = prisma,
+): Promise<QcInspectionSummary> {
+  const order = await db.order.findUnique({ where: { orderId } });
+  if (!order) {
+    throw new NotFoundError('Order', orderId);
+  }
 
-  const agg = await prisma.dailyQcInspection.aggregate({
+  const agg = await db.dailyQcInspection.aggregate({
     where: { orderId },
     _sum: { producedQty: true, passedQty: true, rejectedQty: true, reworkQty: true },
   });

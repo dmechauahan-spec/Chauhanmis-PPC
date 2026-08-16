@@ -28,3 +28,12 @@ export async function getPlanVsActual(req: Request, res: Response, next: NextFun
     next(err);
   }
 }
+
+export async function getCompletionForecast(req: Request, res: Response, next: NextFunction) {
+  try {
+    const result = await productionPlanService.getCompletionForecast(req.params.orderId);
+    sendSuccess(res, result);
+  } catch (err) {
+    next(err);
+  }
+}

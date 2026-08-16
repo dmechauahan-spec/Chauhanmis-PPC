@@ -25,5 +25,11 @@ router.get(
   validateRequest({ params: orderIdParamsSchema }),
   controller.getPlanVsActual,
 );
+router.get(
+  '/:orderId/completion-forecast',
+  read,
+  validateRequest({ params: orderIdParamsSchema }),
+  controller.getCompletionForecast,
+);
 
 export default router;
