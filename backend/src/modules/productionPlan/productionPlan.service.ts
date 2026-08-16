@@ -259,3 +259,28 @@ export async function getCompletionForecast(orderId: string): Promise<Completion
 
   return { orderId, ...forecast };
 }
+
+// Client Flow Part 5 — cumulative planned quantity "TO DATE" (through
+// today), for the Unified Order Status Dashboard's plan-vs-actual-so-far
+// comparison. Deliberately distinct from getPlanVsActual's `summary.
+// cumulativePlannedQty` above, which sums EVERY day in the plan regardless
+// of whether that day has passed yet — that's a whole-plan total, not a
+// to-date figure, and would overstate "what we should have made by now" for
+// an order whose plan still extends into the future. Returns null (not 0)
+// when no plan has been generated yet at all — distinguishable from "a plan
+// exists but today is before its first day."
+export async function getCumulativePlannedQtyToDate(orderId: string): Promise<number | null> {
+  const rows = await prisma.dailyProductionPlan.findMany({
+    where: { orderId },
+    select: { planDate: true, plannedQty: true },
+  });
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const today = startOfDayUTC(new Date());
+  const sum = rows
+    .filter((row) => row.planDate.getTime() <= today.getTime())
+    .reduce((acc, row) => acc + Number(row.plannedQty), 0);
+  return round2(sum);
+}

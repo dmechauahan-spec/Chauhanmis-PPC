@@ -45,4 +45,5 @@ export const PERMISSIONS = {
   shortageReport: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // read-only module — write unused
   search: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // read-only module — write unused
   dashboard: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // read-only module — write unused
+  orderStatusDashboard: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // read-only module — write unused; same shape as dashboard — see README "Client Flow Part 5"
 } as const;

@@ -18,16 +18,17 @@ authorization** (`Admin` / `StoreManager` / `ProductionManager`) — every route
 token, and write access to each module is gated by role. See "Authentication & Authorization"
 below for the full role model, permission matrix, and rationale.
 
-Also in progress: a **5-part Client Flow addition** implementing the client's detailed PPC flow
+Also complete: a **5-part Client Flow addition** implementing the client's detailed PPC flow
 document on top of the 14 completed modules — Machine master data, a daily Plan-vs-Actual
-comparison, daily QC inspection results, a QC-driven completion forecast, and a formal order
-closure summary. **Parts 1 (Machine master data + Order/Daily Log extensions), 2 (Daily Production
-Plan + Plan vs. Actual), 3 (Daily QC Inspection), and 4 (QC-Adjusted Completion Forecast + Order
-Closure Summary) are complete**; Part 5 is not yet built. See "Client Flow Part 1" through "Client
-Flow Part 4" below — Part 3 is worth reading before touching either QC module (explains how "QC
-Batches" (Module 13) and "QC Inspections" (Part 3) are unrelated despite the shared name), and
-Part 4 is worth reading before touching either completion-prediction endpoint (explains how it and
-Module 11's At-Risk prediction are two different, deliberately separate signals).
+comparison, daily QC inspection results, a QC-driven completion forecast, a formal order closure
+summary, and a Unified Order Status Dashboard tying it all together. **All 5 parts are complete**
+— see "Client Flow Part 1" through "Client Flow Part 5" below. Part 3 is worth reading before
+touching either QC module (explains how "QC Batches" (Module 13) and "QC Inspections" (Part 3) are
+unrelated despite the shared name); Part 4 is worth reading before touching either
+completion-prediction endpoint (explains how it and Module 11's At-Risk prediction are two
+different, deliberately separate signals); Part 5's closing note maps every flow concept from the
+client's document to the part that addresses it. The frontend UI for any of this remains a
+separate, later phase — see the end of "Client Flow Part 5".
 
 > **⚠️ Known limitation you will hit immediately if you use search:** `GET /api/search`'s order
 > results always return `pendingQty: null` — there is no schema linkage between production output
@@ -1829,6 +1830,107 @@ has not been closed yet — no closure summary exists," pointing at the fact tha
 captured automatically on closure rather than looking like a generic missing-record error. Read
 permission follows Orders' own convention (`STORE_AND_PRODUCTION`, all roles) — the summary is
 system-written, but reading it is exactly as open as reading the order itself.
+
+### Client Flow Part 5 — Unified Order Status Dashboard (final part)
+
+**Part 5**, the final part of the 5-part Client Flow addition (see "Client Flow Part 1" above).
+`GET /api/order-status-dashboard` gives one row per non-`Closed` order:
+**Order → Line → Machine → Plan → Actual → QC → Balance → Expected Completion**, plus a status
+badge — exactly the client's requested single-view composition.
+
+**Pure composition layer, like Module 14's dashboard — every number here has a home elsewhere.**
+`orderStatusDashboard.service.ts` introduces **no new business logic or duplicated calculations**.
+Per order, it calls:
+
+| Dashboard field                          | Source                                                                 |
+| ----------------------------------------- | ----------------------------------------------------------------------- |
+| Order context (`client`, `sku`, `qty`, `priority`, `dueDate`, `status`) | `orders` table directly (Module 2)                     |
+| `line`                                    | `production_schedule` (Module 10), if scheduled                        |
+| `plan` (cumulative planned qty **to date**) | Part 2's new `getCumulativePlannedQtyToDate(orderId)`                |
+| `qc` (`passedQty`/`rejectedQty`/`reworkQty`) | Part 3's `getQcInspectionSummary(orderId)`, reused as-is             |
+| `balanceQty`, `expectedCompletionDate`, and the `isDelayedByForecast` badge input | Part 4A's `getCompletionForecast(orderId)`, reused as-is — **not recomputed** as `qty - qc.passedQty` a second time |
+| `statusBadge`'s schedule-based input       | `production_schedule.status` (Module 10/11), reused verbatim           |
+| `actual` (cumulative actual to date)       | A fresh direct sum of `daily_production_log.totalOutputQty` — see note below |
+| `machines`                                | Always `[]` — see note below                                          |
+
+Two fields are direct reads rather than calls into an existing exported function, and both are
+called out explicitly rather than silently treated as "just another reused service call":
+
+- **`actual`** is a one-line `daily_production_log` aggregate. The *identical* aggregate already
+  exists inside `orders.service.ts`'s private `createOrderClosureSummary` (Part 4B) — but that
+  function isn't exported for reuse (it's an internal hook on a specific transition, not a general
+  service function), and exporting it purely so this read-only dashboard could import it would mean
+  changing already-shipped, already-tested Part 4B code for no functional benefit. Re-issuing the
+  same one-line `aggregate` here is a fresh, equally-trivial read, not duplicated *business logic*
+  (there's no derivation, formula, or judgment call in "sum this column").
+- **`machines` is always `[]`.** The Part 5 request text assumed Part 1 had added a `machineId`
+  column to `daily_production_log` — **it didn't.** Part 1's actual, already-shipped scope added
+  exactly `orderId`, `rejectedQty`, and `reworkQty` to that table (see "Client Flow Part 1" above);
+  no field links a daily log row to a specific `Machine`. Retroactively adding one now, three parts
+  later, would mean a new migration plus changes to Part 1's already-tested create/update
+  endpoints — real scope creep for a field this dashboard would still show as unpopulated for every
+  historical row anyway. This part's own instructions explicitly cover this outcome ("if it's empty
+  ..., that's fine, return an empty array, don't fabricate data"), so `[]` is followed literally
+  rather than inventing data or silently expanding Part 1's scope. Machine-level tracking of daily
+  output is a real gap — same shape as `daily_production_plan.machineId` (Part 2) staying `null`
+  for the same underlying reason — worth a dedicated future part if the client's flow needs it, not
+  a quiet addition here.
+
+**A deliberate performance tradeoff, not an oversight.** Composing four other services' functions
+per row (`getCumulativePlannedQtyToDate`, `getQcInspectionSummary`, `getCompletionForecast` — which
+itself calls `getQcInspectionSummary` again internally — plus the direct `actual`/`machines`/line
+reads) issues several extra database round trips per order compared to one hand-written mega-query.
+That's the explicit tradeoff this part's own instructions ask for: reuse over invention, even at
+some query-count cost, so this dashboard can never silently drift out of sync with Parts 2–4's own
+canonical numbers. Rows are fetched with `Promise.all` to parallelize the per-row work; this is
+fine at the list endpoint's normal page sizes (default 20, max 100) and would be the first thing to
+revisit (e.g. a purpose-built batched query) if this ever became a real hot path.
+
+**The `statusBadge` precedence table — the single most important thing to get right here, since it
+combines signals from three different subsystems.** Most urgent/definitive wins; the first matching
+rule short-circuits every rule below it (`statusBadge.ts`'s `deriveStatusBadge`):
+
+| # | Badge            | Condition                                                                 | Why it outranks what's below                                                              |
+| - | ---------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| 1 | ✅ Completed      | `order.status === 'DispatchReady'`                                        | A hard state fact. `Closed` orders never reach this function (excluded upstream), so this is the only "production is actually finished" state left to represent — once here, forward-looking risk signals (is it at risk? is QC still pending?) stop being the useful question. |
+| 2 | 🔴 Delayed        | Part 4A's `isDelayedByForecast === true`                                  | The most concrete, most urgent signal available: a real projected due-date miss computed from actual accepted output — outranks the coarser schedule-slack signal below it. |
+| 3 | 🟡 At Risk        | `production_schedule.status === 'AtRisk'` (Module 10/11, reused verbatim) AND not already Delayed | Reuses Module 10/11's own signal rather than reinventing it. Deliberately does **not** treat `'RMShortage'` schedule status as At Risk here — that's Module 6's distinct material-shortage concept, with its own dedicated surfaces (CTB dashboard, shortage report); folding it in here would blur two different problems into one badge. |
+| 4 | 🔵 QC Pending     | Production has been logged (`actual > 0`) AND zero `daily_qc_inspections` rows exist for the order | A precisely-defined gap — production happened, nothing has been QC'd yet — checked via a row **count**, not a rejection-rate threshold guess. A threshold (e.g. "reject rate above X%") was considered and deliberately rejected: it answers a different question ("is quality bad?") than the one this badge is actually for ("has anyone checked yet?"), and picking an arbitrary percentage would be a much less precisely-defined rule than a plain existence check. |
+| 5 | 🟢 On Track       | None of the above                                                          | —                                                                                             |
+
+`statusBadge.test.ts` unit-tests every state individually and includes an explicit
+precedence-collision test (all of Delayed/At Risk/QC Pending simultaneously true on a
+`DispatchReady` order still resolves to `Completed`; Delayed still beats At Risk and QC Pending
+when those are also simultaneously true; and so on down the table) — read that file alongside this
+table before changing the precedence order.
+
+**Permissions.** Read-only, all three roles (`STORE_AND_PRODUCTION` in the permissions table, plus
+`Admin` via `authorize()`'s always-allow) — identical shape to Module 14's `dashboard`, per this
+part's own instruction.
+
+---
+
+**This completes the 5-part Client Flow addition.** A mapping from the flow concepts described
+across these five prompts to what was actually built — written from what this backend was told in
+each part's prompt, **not** a literal quote of the client's own source document (this backend was
+never shown that document's exact text, only its concepts filtered through five separate prompts;
+phrasing it as a direct citation would overstate what's actually known here):
+
+| Flow concept                                                     | Addressed by                                                        |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| Order creation, structured special requirements                   | Module 2 (pre-existing) + **Part 1**'s `specialRequirements`           |
+| Per-Machine capacity/status within a Line                         | **Part 1**'s `Machine` master data                                     |
+| Linking daily production to the specific order it fulfills        | **Part 1**'s `daily_production_log.orderId` (closing Module 12's documented gap) |
+| A day-by-day production plan once an order is scheduled           | **Part 2**'s `DailyProductionPlan` + generate endpoint                 |
+| Daily Plan vs. Actual comparison, with downtime-linked gap reasons | **Part 2**'s plan-vs-actual endpoint                                   |
+| Daily QC inspection results (pass/reject/rework), distinct from batch traceability | **Part 3**'s `DailyQcInspection` module                       |
+| Tracking Accepted (QC-passed) Production against ordered qty       | **Part 3**'s `acceptedProductionQty` on the cumulative summary         |
+| Projecting completion date from real QC-accepted output pace       | **Part 4A**'s QC-Adjusted Completion Forecast                          |
+| Capturing a final production/QC/delay summary when an order closes | **Part 4B**'s automatic `OrderClosureSummary` capture                  |
+| One unified per-order view: Order → Line → Machine → Plan → Actual → QC → Balance → Expected Completion | **Part 5**'s Unified Order Status Dashboard (this section) |
+
+The **frontend UI** for any of this — Parts 1 through 5 alike — is explicitly **out of scope** for
+this backend work and is a separate, later set of prompts once this backend has been reviewed.
 
 ## Assumptions
 

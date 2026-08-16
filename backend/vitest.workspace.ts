@@ -29,6 +29,7 @@ const INTEGRATION_TEST_FILES = [
   'src/modules/materials/materials.test.ts',
   'src/modules/oee/oee.test.ts',
   'src/modules/orders/orders.test.ts',
+  'src/modules/orderStatusDashboard/orderStatusDashboard.test.ts',
   'src/modules/products/products.test.ts',
   'src/modules/productionPlan/productionPlan.test.ts',
   'src/modules/purchaseRequisitions/purchaseRequisitions.test.ts',

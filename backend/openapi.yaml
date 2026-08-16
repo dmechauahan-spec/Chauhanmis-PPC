@@ -56,6 +56,7 @@ tags:
   - name: Testing Plans
   - name: QC Inspections
   - name: Dashboard
+  - name: Order Status Dashboard
 
 components:
   securitySchemes:
@@ -1162,6 +1163,63 @@ components:
         planning: { $ref: '#/components/schemas/PlanningHealth' }
         materials: { $ref: '#/components/schemas/MaterialsHealth' }
         management: { $ref: '#/components/schemas/ManagementMetrics' }
+
+    OrderStatusDashboardRow:
+      type: object
+      description: >
+        Client Flow Part 5 (final part). A pure composition row — every field is read or reused
+        from an existing module/part, never independently recomputed. See README "Client Flow
+        Part 5" for the full source-of-each-field table and the status-badge precedence table.
+      properties:
+        orderId: { type: string }
+        client: { type: string }
+        sku: { type: string }
+        product: { type: string }
+        qty: { type: integer }
+        priority: { type: string, enum: [Low, Medium, High] }
+        dueDate: { type: string, format: date, nullable: true }
+        status:
+          type: string
+          enum: [Open, PendingRM, Scheduled, Running, QC, DispatchReady]
+          description: Module 2's order status. Closed orders never appear — this endpoint lists non-Closed orders only.
+        line:
+          type: object
+          nullable: true
+          description: From production_schedule (Module 10), if the order has been scheduled.
+          properties:
+            lineId: { type: string }
+            lineName: { type: string, nullable: true }
+        machines:
+          type: array
+          items: { type: string }
+          description: >
+            Always [] today. daily_production_log has no machineId column — Part 1's actual scope
+            never added one (only orderId/rejectedQty/reworkQty) — so there is no per-log machine
+            data to draw from. Not a bug; see README "Client Flow Part 5".
+        plan:
+          type: number
+          nullable: true
+          description: Cumulative planned qty THROUGH TODAY (Part 2's getCumulativePlannedQtyToDate). Null if no plan has been generated yet.
+        actual: { type: number, description: Cumulative actual production to date — sum of daily_production_log.totalOutputQty for this order. }
+        qc:
+          type: object
+          description: Part 3's cumulative QC summary, reused as-is.
+          properties:
+            passedQty: { type: number }
+            rejectedQty: { type: number }
+            reworkQty: { type: number }
+        balanceQty:
+          type: number
+          description: Taken directly from Part 4A's CompletionForecastResult.balanceQty (qty - acceptedProductionQty) — never recomputed here.
+        expectedCompletionDate:
+          type: string
+          format: date
+          nullable: true
+          description: From Part 4A's forecast; null if no forecast could be computed yet (see CompletionForecastResult.noDataReason).
+        statusBadge:
+          type: string
+          enum: ['🟢 On Track', '🟡 At Risk', '🔴 Delayed', '🔵 QC Pending', '✅ Completed']
+          description: Derived by strict precedence (most urgent wins) — see README "Client Flow Part 5" for the full table.
 
 paths:
   /auth/login:
@@ -3184,3 +3242,31 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/DashboardOverview' }
         '400': { description: Missing/invalid date range }
+
+  /order-status-dashboard:
+    get:
+      tags: [Order Status Dashboard]
+      summary: 'Unified per-order view: Order -> Line -> Machine -> Plan -> Actual -> QC -> Balance -> Expected Completion'
+      description: >
+        Client Flow Part 5, the final part of the Client Flow addition. A pure composition layer
+        (like Module 14's dashboard) — every field is read or reused from Modules 2/10/11 and
+        Parts 1-4, never independently recomputed. Lists non-Closed orders only. See README
+        "Client Flow Part 5" for the full source-of-each-field table and the statusBadge
+        precedence table.
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+      responses:
+        '200':
+          description: Paginated list of OrderStatusDashboardRow
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/OrderStatusDashboardRow' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pageSize: { type: integer }
