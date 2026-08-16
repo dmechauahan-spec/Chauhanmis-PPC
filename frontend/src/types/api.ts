@@ -193,6 +193,8 @@ export interface Order {
   // Module 6 — both null until the order's first CTB evaluation.
   ctbStatus: "ClearToBuild" | "RmShortage" | null;
   ctbCheckedAt: string | null;
+  // Client Flow Part 1 — free-text, optional. See CreateOrderPayload/UpdateOrderPayload.
+  specialRequirements: string | null;
 }
 
 export interface OrderStatusHistoryEntry {
@@ -212,6 +214,17 @@ export interface CreateOrderPayload {
   qty: number;
   dueDate?: string;
   priority: OrderPriority;
+  specialRequirements?: string;
+}
+
+// Client Flow Part 1 — PATCH /api/orders/:orderId, separate from the
+// status-transition endpoint. The backend's updateOrderSchema currently
+// accepts ONLY specialRequirements — see order-detail-page.tsx and README
+// note in edit-special-requirements-dialog.tsx for why the UI doesn't offer
+// editing client/priority/dueDate here even though they're structurally
+// similar fields.
+export interface UpdateOrderPayload {
+  specialRequirements?: string | null;
 }
 
 // ---- CTB (Module 6) — GET /api/ctb/order/:orderId ----
@@ -594,6 +607,52 @@ export interface UpdateLinePayload {
   notes?: string | null;
   capPerDay?: number | null;
   productTypes?: string[];
+}
+
+// ---- Machines (Client Flow Part 1) — GET/POST/PATCH/DELETE /api/machines ----
+//
+// A Line can have several Machines. At least one of the three capacity
+// fields is required by the backend (Zod-layer only, not a DB constraint);
+// if more than one is set, none are reconciled against each other — see
+// ppc-backend README "Machine master data".
+
+export type MachineStatus = "Active" | "Offline" | "Maintenance";
+
+export interface Machine {
+  id: number;
+  machineId: string;
+  machineName: string;
+  lineId: string;
+  capacityPerHour: string | null; // Decimal — serialize-as-string pattern
+  capacityPerShift: string | null;
+  capacityPerDay: string | null;
+  status: MachineStatus;
+  notes: string | null;
+  // The backend includes the parent line's basic info directly so the UI
+  // doesn't need a second lookup for the table's Line column — unlike
+  // HrTeamRow below, which only carries lineId and is resolved client-side.
+  line: { lineId: string; lineName: string };
+}
+
+export interface CreateMachinePayload {
+  machineId: string;
+  machineName: string;
+  lineId: string;
+  capacityPerHour?: number;
+  capacityPerShift?: number;
+  capacityPerDay?: number;
+  status?: MachineStatus;
+  notes?: string;
+}
+
+export interface UpdateMachinePayload {
+  machineName?: string;
+  lineId?: string;
+  capacityPerHour?: number | null;
+  capacityPerShift?: number | null;
+  capacityPerDay?: number | null;
+  status?: MachineStatus;
+  notes?: string | null;
 }
 
 // ---- HR Teams (Module 1) — GET/POST/PATCH/DELETE /api/hr-teams ----

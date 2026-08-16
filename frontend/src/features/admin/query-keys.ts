@@ -15,3 +15,11 @@ export const usersKeys = {
   lists: () => [...usersKeys.all, "list"] as const,
   list: (filters: Record<string, unknown>) => [...usersKeys.lists(), filters] as const,
 };
+
+// Client Flow Part 1 — Machines. No other consumer yet (unlike Products/
+// Lines' keys above), same shape as hrTeamsKeys/usersKeys.
+export const machinesKeys = {
+  all: ["machines"] as const,
+  lists: () => [...machinesKeys.all, "list"] as const,
+  list: (filters: Record<string, unknown>) => [...machinesKeys.lists(), filters] as const,
+};

@@ -7,6 +7,7 @@ import type {
   Order,
   OrderStatusHistoryEntry,
   PaginatedResult,
+  UpdateOrderPayload,
 } from "@/types/api";
 import type { OrderStatus } from "@/lib/order-pipeline";
 
@@ -81,6 +82,25 @@ export function useCreateOrder() {
       return res.data.data;
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ordersKeys.lists() });
+    },
+  });
+}
+
+// Client Flow Part 1 — PATCH /api/orders/:orderId, the general field-update
+// endpoint (separate from /status below). Currently only backs the Edit
+// Special Requirements action — see order-detail-page.tsx and README note
+// in edit-special-requirements-dialog.tsx for why this stays narrow rather
+// than a full "Edit Order" form.
+export function useUpdateOrder(orderId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: UpdateOrderPayload) => {
+      const res = await apiClient.patch<ApiSuccess<Order>>(`/orders/${orderId}`, payload);
+      return res.data.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ordersKeys.detail(orderId) });
       queryClient.invalidateQueries({ queryKey: ordersKeys.lists() });
     },
   });

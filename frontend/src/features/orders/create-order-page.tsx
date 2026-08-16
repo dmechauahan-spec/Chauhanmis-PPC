@@ -33,6 +33,7 @@ export function CreateOrderPage() {
 
   async function onSubmit(values: CreateOrderFormValues) {
     try {
+      const specialRequirements = values.specialRequirements?.trim();
       const order = await createOrder.mutateAsync({
         orderId: values.orderId,
         client: values.client,
@@ -40,6 +41,7 @@ export function CreateOrderPage() {
         qty: values.qty,
         priority: values.priority,
         ...(values.dueDate ? { dueDate: values.dueDate } : {}),
+        ...(specialRequirements ? { specialRequirements } : {}),
       });
       navigate(`/orders/${order.orderId}`);
     } catch {
@@ -153,6 +155,17 @@ export function CreateOrderPage() {
                 onChange={(e) => setValue("dueDate", e.target.value, { shouldValidate: true })}
               />
               {errors.dueDate && <p className="text-xs text-status-critical">{errors.dueDate.message}</p>}
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="specialRequirements">Special Requirements (optional)</Label>
+              <textarea
+                id="specialRequirements"
+                rows={3}
+                placeholder="e.g. ship in anti-static bags, label in French…"
+                className="w-full rounded-md border border-surface-border bg-surface-sunken px-3 py-2 text-sm text-ink-primary outline-none placeholder:text-ink-faint focus-visible:border-signal-amber/60 focus-visible:ring-2 focus-visible:ring-signal-amber/25"
+                {...register("specialRequirements")}
+              />
             </div>
           </CardContent>
           <CardFooter className="justify-end gap-2">

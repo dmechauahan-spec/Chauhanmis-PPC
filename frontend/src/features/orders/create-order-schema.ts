@@ -22,6 +22,7 @@ export const createOrderFormSchema = z.object({
     .refine((val) => !val || !Number.isNaN(Date.parse(val)), { message: "Enter a valid date" })
     .refine((val) => !val || isTodayOrFuture(val), { message: "Due date must be today or in the future" }),
   priority: z.enum(["Low", "Medium", "High"]),
+  specialRequirements: z.string().optional(),
 });
 
 // z.coerce.number() makes the schema's INPUT type (what react-hook-form's

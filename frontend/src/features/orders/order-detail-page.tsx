@@ -9,8 +9,10 @@ import { RiskPanel } from "./panels/risk-panel";
 import { StatusHistoryPanel } from "./panels/status-history-panel";
 import { ChangeStatusActions } from "./status-actions";
 import { DeleteOrderDialog } from "./delete-order-dialog";
+import { EditSpecialRequirementsDialog } from "./edit-special-requirements-dialog";
 import { useAuth } from "@/features/auth/auth-context";
 import { PipelineStepper } from "@/components/pipeline-stepper";
+import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -89,6 +91,32 @@ export function OrderDetailPage() {
         <Field label="Quantity" value={order.qty.toLocaleString()} mono />
         <Field label="Due Date" value={order.dueDate ? formatDate(order.dueDate) : "—"} mono />
       </div>
+
+      {/* Shown only when there's something to show OR someone who can add
+          it — a read-only viewer sees nothing at all when it's empty (no
+          "Not specified" clutter, per this phase's spec), while a write-
+          permitted user still gets a small affordance to set it later even
+          if it wasn't filled in at creation. */}
+      {(order.specialRequirements || canAct) && (
+        <div className="mb-5 rounded-md border border-surface-border bg-surface-sunken px-3.5 py-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-medium tracking-wide text-ink-muted uppercase">Special Requirements</p>
+            {canAct && (
+              <EditSpecialRequirementsDialog
+                order={order}
+                trigger={
+                  <Button variant="ghost" size="sm" className="h-6 px-2 text-xs">
+                    {order.specialRequirements ? "Edit" : "Add"}
+                  </Button>
+                }
+              />
+            )}
+          </div>
+          {order.specialRequirements && (
+            <p className="mt-1 text-sm whitespace-pre-wrap text-ink-primary">{order.specialRequirements}</p>
+          )}
+        </div>
+      )}
 
       {canAct && (
         <Card className="mb-5">

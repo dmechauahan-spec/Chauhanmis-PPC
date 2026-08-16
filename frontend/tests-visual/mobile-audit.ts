@@ -84,6 +84,7 @@ const ROUTES: RouteSpec[] = [
   { path: "/testing-plans", name: "Testing Plans", roles: "any" },
   { path: "/products", name: "Products", roles: "any" },
   { path: "/lines", name: "Lines", roles: "any" },
+  { path: "/machines", name: "Machines", roles: "any" },
   { path: "/hr-teams", name: "HR Teams", roles: "any" },
   { path: "/users", name: "Users", roles: ["Admin"] }, // admin-only, both by nav AND by API
 ];

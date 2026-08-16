@@ -26,6 +26,7 @@ import { QcBatchDetailPage } from "@/features/qc/qc-batch-detail-page";
 import { TestingPlansPage } from "@/features/qc/testing-plans-page";
 import { ProductsPage } from "@/features/admin/products-page";
 import { LinesPage } from "@/features/admin/lines-page";
+import { MachinesPage } from "@/features/admin/machines-page";
 import { HrTeamsPage } from "@/features/admin/hr-teams-page";
 import { UsersPage } from "@/features/admin/users-page";
 import { OeePage } from "@/features/oee/oee-page";
@@ -82,6 +83,7 @@ export default function App() {
         <Route path="/testing-plans" element={<TestingPlansPage />} />
         <Route path="/products" element={<ProductsPage />} />
         <Route path="/lines" element={<LinesPage />} />
+        <Route path="/machines" element={<MachinesPage />} />
         <Route path="/hr-teams" element={<HrTeamsPage />} />
         <Route path="/users" element={<UsersPage />} />
       </Route>

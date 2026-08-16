@@ -14,6 +14,7 @@ import {
   ClipboardCheck,
   Package,
   Factory,
+  Wrench,
   Users2,
   UserCog,
   TrendingUp,
@@ -79,6 +80,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { label: "Products", to: "/products", icon: Package },
       { label: "Lines", to: "/lines", icon: Factory },
+      { label: "Machines", to: "/machines", icon: Wrench },
       { label: "HR Teams", to: "/hr-teams", icon: Users2 },
       { label: "Users", to: "/users", icon: UserCog, roles: ["Admin"] },
     ],
