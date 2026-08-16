@@ -274,6 +274,7 @@ model Order {
   ctbShortages    OrderCtbShortage[]
   qcBatch         QcBatch?
   dailyLogs       DailyProductionLog[]
+  productionPlan  DailyProductionPlan[]
 
   @@index([status])
   @@index([sku])
@@ -334,6 +335,30 @@ model ProductionSchedule {
   @@index([status])
   @@index([lineId])
   @@map("production_schedule")
+}
+
+// ============================================================================
+// CLIENT FLOW PART 2 — DAILY PRODUCTION PLAN
+//
+// A day-by-day plan generated once an order has a production_schedule row
+// (Module 10) — one row per calendar day from the schedule's startDate to
+// estEndDate, plannedQty distributed across days by planDistributor.ts. See
+// README "Client Flow Part 2" for the distribution algorithm, the explicit
+// generate-on-demand convention, and why machineId stays null for now.
+// ============================================================================
+model DailyProductionPlan {
+  id         BigInt   @id @default(autoincrement())
+  orderId    String   @map("order_id")
+  planDate   DateTime @map("plan_date") @db.Date
+  lineId     String?  @map("line_id")
+  machineId  String?  @map("machine_id")
+  plannedQty Decimal  @map("planned_qty") @db.Decimal(12, 2)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [orderId], onDelete: Cascade)
+
+  @@unique([orderId, planDate])
+  @@map("daily_production_plan")
 }
 
 // ============================================================================

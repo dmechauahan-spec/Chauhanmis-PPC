@@ -31,6 +31,7 @@ export const PERMISSIONS = {
   dailyLogs: { read: STORE_AND_PRODUCTION, write: PRODUCTION_ONLY },
   oee: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // read-only module — write unused (no write routes exist)
   scheduling: { read: STORE_AND_PRODUCTION, write: PRODUCTION_ONLY },
+  productionPlan: { read: STORE_AND_PRODUCTION, write: PRODUCTION_ONLY }, // same as Scheduling — see README "Client Flow Part 2"
   risk: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // read-only module — write unused
   qcBatches: { read: STORE_AND_PRODUCTION, write: PRODUCTION_ONLY },
   qcTestingPlans: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // master data, not a floor action

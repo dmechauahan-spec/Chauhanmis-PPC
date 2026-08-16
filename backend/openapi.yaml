@@ -49,6 +49,7 @@ tags:
   - name: Shortage Report
   - name: Purchase Requisitions
   - name: Scheduling
+  - name: Production Plan
   - name: Risk
   - name: Search
   - name: QC
@@ -703,6 +704,74 @@ components:
         slackDays: { type: integer, nullable: true }
         status: { type: string, enum: [OnTrack, AtRisk, RMShortage] }
         createdAt: { type: string, format: date-time }
+
+    DailyProductionPlanRow:
+      type: object
+      description: >
+        Client Flow Part 2. One row per calendar day of an order's schedule span — see README
+        "Client Flow Part 2".
+      properties:
+        id: { type: integer }
+        orderId: { type: string }
+        planDate: { type: string, format: date }
+        lineId: { type: string, nullable: true, description: Populated from the schedule's assigned line. }
+        machineId:
+          type: string
+          nullable: true
+          description: Always null today — machine-level scheduling assignment isn't built yet. See README.
+        plannedQty: { type: number }
+
+    PlanVsActualDay:
+      type: object
+      properties:
+        date: { type: string, format: date }
+        plannedQty: { type: number }
+        actualQty: { type: number, description: Summed totalOutputQty across every daily log matching this orderId+date. }
+        gap: { type: number, description: 'actualQty - plannedQty (negative = shortfall).' }
+        achievementPct:
+          type: number
+          nullable: true
+          description: 'actualQty / plannedQty * 100. Null only if plannedQty is 0 (divide-by-zero guard).'
+        gapReasons:
+          type: array
+          description: Downtime reasons (Module 3's downtime_log, same vocabulary) from the matching daily log(s), summed per reason.
+          items:
+            type: object
+            properties:
+              reason:
+                type: string
+                enum:
+                  [
+                    Material Not Available,
+                    Machine Breakdown,
+                    Changeover Activity,
+                    Operator Unavailable,
+                    Power Failure,
+                    Other,
+                  ]
+              totalMinutes: { type: number }
+        noDataLogged:
+          type: boolean
+          description: >
+            true if no daily_production_log row at all matched this orderId+date (a data-entry gap,
+            distinct from a matching log that genuinely recorded zero output). See README.
+
+    PlanVsActualResult:
+      type: object
+      properties:
+        orderId: { type: string }
+        days:
+          type: array
+          items: { $ref: '#/components/schemas/PlanVsActualDay' }
+        summary:
+          type: object
+          properties:
+            cumulativePlannedQty: { type: number }
+            cumulativeActualQty: { type: number }
+            overallAchievementPct:
+              type: number
+              nullable: true
+              description: Computed from cumulative sums, not an average of each day's achievementPct — same convention as Module 4's OEE aggregation.
 
     AtRiskOrderRow:
       type: object
@@ -2469,6 +2538,77 @@ paths:
         '200': { description: Un-scheduled successfully }
         '400': { description: "Order status is not 'Scheduled' — cannot un-schedule" }
         '404': { description: No schedule row exists for this order }
+
+  /production-plan/generate/{orderId}:
+    parameters:
+      - name: orderId
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [Production Plan]
+      summary: Generate (or re-generate) the day-by-day production plan
+      description: >
+        Client Flow Part 2. Explicit, caller-triggered generation — not auto-run from
+        POST /scheduling/run, same convention as Module 9's PR generation and Module 13's QC batch
+        generation. Reads the order's production_schedule row (startDate, estEndDate, dailyOutput);
+        distributes qty across days via planDistributor.ts's distributeDailyPlanQty (every day gets
+        min(dailyOutput, remaining) except the last, which always gets exactly what remains, so the
+        sum is always exactly the order's qty). Re-generating replaces the existing plan wholesale
+        (delete + recreate in one transaction), same pattern as Module 5's recompute endpoint. See
+        README "Client Flow Part 2" for the worked examples.
+      responses:
+        '201':
+          description: Plan generated (or replaced)
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DailyProductionPlanRow' }
+        '404': { description: Unknown orderId }
+        '409': { description: 'Order has no production schedule yet, or the schedule is missing startDate/estEndDate/dailyOutput' }
+
+  /production-plan/{orderId}:
+    parameters:
+      - name: orderId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Production Plan]
+      summary: The day-by-day plan for an order
+      responses:
+        '200':
+          description: Day-by-day plan rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/DailyProductionPlanRow' }
+        '404': { description: 'Unknown orderId, or no plan has been generated yet (error message points at the generate endpoint)' }
+
+  /production-plan/{orderId}/plan-vs-actual:
+    parameters:
+      - name: orderId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Production Plan]
+      summary: Daily plan vs. actual comparison
+      description: >
+        Client Flow Part 2. Joins each planned day against daily_production_log rows sharing the
+        same orderId and exact date (the linkage Part 1's daily_production_log.orderId added).
+        Multiple same-day entries (e.g. separate shifts) have their totalOutputQty summed. See
+        README "Client Flow Part 2" for the noDataLogged distinction and the achievementPct
+        divide-by-zero guard.
+      responses:
+        '200':
+          description: PlanVsActualResult
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlanVsActualResult' }
+        '404': { description: 'Unknown orderId, or no plan has been generated yet' }
 
   /risk/at-risk-orders:
     get:

@@ -21,8 +21,9 @@ below for the full role model, permission matrix, and rationale.
 Also in progress: a **5-part Client Flow addition** implementing the client's detailed PPC flow
 document on top of the 14 completed modules — Machine master data, a daily Plan-vs-Actual
 comparison, daily QC inspection results, a QC-driven completion forecast, and a formal order
-closure summary. **Part 1 (Machine master data + Order/Daily Log extensions) is complete**; Parts
-2–5 are not yet built. See "Client Flow Part 1" below.
+closure summary. **Parts 1 (Machine master data + Order/Daily Log extensions) and 2 (Daily
+Production Plan + Plan vs. Actual) are complete**; Parts 3–5 are not yet built. See "Client Flow
+Part 1" and "Client Flow Part 2" below.
 
 > **⚠️ Known limitation you will hit immediately if you use search:** `GET /api/search`'s order
 > results always return `pendingQty: null` — there is no schema linkage between production output
@@ -1518,6 +1519,112 @@ status-flow validator — see "Module 2 amendment" above) and no route for editi
 field. `PATCH /api/orders/:orderId` is deliberately narrow (currently only `specialRequirements`)
 and entirely separate from the status endpoint's transition rules — it does not touch `status` and
 the status endpoint does not touch `specialRequirements`.
+
+### Client Flow Part 2 — Daily Production Plan & Plan vs. Actual
+
+**Part 2** of the 5-part Client Flow addition (see "Client Flow Part 1" above). Adds an explicit
+day-by-day production plan per order, generated once it's scheduled, and a daily comparison
+against what actually happened.
+
+**`daily_production_plan` — one row per calendar day.** New table, `orderId` + `planDate` +
+`lineId` (nullable) + `machineId` (nullable, always `null` today — see below) + `plannedQty`, with
+a `@@unique([orderId, planDate])` constraint (one row per order per day). `Order` gains the
+corresponding back-relation (`productionPlan`).
+
+**Explicit generation, same convention as Module 9/Module 13.** `POST
+/api/production-plan/generate/:orderId` is a deliberate, caller-triggered action — it is **not**
+auto-triggered from Module 10's `POST /api/scheduling/run`, matching the same "generate on demand,
+not a silent side effect" convention already established by Module 9's PR generation and Module
+13's QC batch generation. It reads the order's existing `production_schedule` row (Module 10):
+`startDate`, `estEndDate`, `dailyOutput`. If there's no schedule yet (or the schedule row exists
+but is missing one of those three fields), it fails with a clear `409` pointing at
+`POST /api/scheduling/run` rather than guessing a plan from incomplete data — this genuinely can't
+run before scheduling. Re-generating an order that already has a plan **replaces** it wholesale
+(delete + recreate in one transaction) — the same "force recompute replaces the cache" pattern
+Module 5's `POST /api/bom-explosion/order/:orderId/recompute` already uses, not an append.
+
+**The day-by-day distribution algorithm (`planDistributor.ts`'s `distributeDailyPlanQty`).** A
+pure, isolated, unit-tested function: given `totalQty` (the order's `qty`), `dailyOutput` (from the
+schedule), and `numDays` (`estEndDate − startDate + 1`, inclusive), it returns an array of
+`numDays` quantities. Every day gets `min(dailyOutput, remaining)` **except the last**, which
+always gets exactly whatever is left (`remaining`) — never an independently-rounded `dailyOutput`.
+This is what guarantees the returned values always sum to exactly `totalQty`, in every case:
+
+- **Even division** — `totalQty=3000, dailyOutput=1000, numDays=3` → `[1000, 1000, 1000]`. The
+  "last day gets the remainder" rule still applies; it just happens that the remainder equals
+  `dailyOutput` here.
+- **Remainder case (the interesting one)** — `totalQty=2500, dailyOutput=1000, numDays=3` →
+  `[1000, 1000, 500]`, not `[1000, 1000, 1000]` (which would over-allocate the plan by 500 units
+  beyond what the order actually needs).
+- **Over-allocated span** — if the schedule's day-count works out larger than `totalQty ÷
+  dailyOutput` actually needs (e.g. `estEndDate` rounded up to a whole extra day it doesn't fully
+  use), `remaining` can hit `0` before the last day. Every day from that point on — including the
+  last — gets `0`, never negative.
+- **Single-day order** — `numDays=1` always returns `[totalQty]` (the "last day" and "only day"
+  are the same day).
+
+Each value is rounded to 2 decimal places (matching `plannedQty`'s `Decimal(12,2)` column) using
+the same running-remainder-subtraction approach the codebase already uses for OEE (see
+`schedulingEngine.ts`'s `round2`) — because the last day absorbs "whatever's left" rather than an
+independently-rounded `dailyOutput`, any per-day rounding drift is caught there too, so the sum
+across the whole plan is always exact, never off by a cent from accumulated rounding.
+`planDistributor.test.ts` asserts this exact-sum property directly for even division, remainder,
+single-day, and over-allocated-span cases.
+
+**`lineId`/`machineId` per plan row.** `lineId` is populated from the schedule's assigned line.
+`machineId` is **always `null` for now** — machine-level scheduling assignment (deciding which of
+a line's Machines an order's daily output actually runs on) isn't built. That's a materially bigger
+future feature (its own assignment algorithm, capacity-aware balancing across a line's machines,
+...) and this part deliberately does not invent one; it leaves the column present and null so a
+later part can populate it without another schema change.
+
+**`GET /api/production-plan/:orderId`** returns the day-by-day rows, `404` if none have been
+generated yet — the same "not computed yet, not an error" framing used elsewhere (e.g. Module 6's
+`neverChecked`), except surfaced as `404` here (per this part's spec) rather than a `200` with a
+sentinel field, with the error message itself pointing the caller at the generate endpoint.
+
+**`GET /api/production-plan/:orderId/plan-vs-actual` — the comparison, and the `noDataLogged`
+distinction.** For each planned day, this joins against `daily_production_log` rows sharing the
+same `orderId` **and** exact `logDate` — the linkage Part 1's `daily_production_log.orderId` field
+made possible (see "Client Flow Part 1" above: this is precisely the follow-up work that note said
+was still needed). If multiple daily-log entries exist for the same order/day (e.g. separate
+General/Extended shift entries), their `totalOutputQty` values are summed into that day's
+`actualQty`. Downtime reasons (`downtime_log`, already using the client's exact vocabulary:
+Material Not Available, Machine Breakdown, Changeover Activity, Operator Unavailable, Power
+Failure, Other) from the matching log(s) are pulled through as `gapReasons: [{ reason,
+totalMinutes }]`, summed per reason across the day's log(s) — reusing Module 3's existing capture
+mechanism directly rather than asking for a second, duplicate one.
+
+A day with **zero** matching daily-log rows reports `actualQty: 0, gapReasons: [], noDataLogged:
+true`. A day that **does** have a matching log reporting genuinely zero output (or simply no
+downtime rows) reports the same `actualQty: 0`/`gapReasons: []` shape but `noDataLogged: false`.
+This distinction matters: `noDataLogged: true` means "nobody has filed a daily log for this
+order/day at all" (a data-entry gap to chase), while `noDataLogged: false` with `actualQty: 0`
+means "someone did file a log, and it genuinely recorded zero output" (a production problem, not a
+missing-data problem) — collapsing the two into one `actualQty: 0` would make it impossible to
+tell which situation you're looking at.
+
+Per day: `gap = actualQty − plannedQty` (signed — negative is a shortfall, positive is
+over-achievement), `achievementPct = actualQty / plannedQty × 100` guarded against
+`plannedQty === 0` (returns `null`, never a division-by-zero `Infinity`/`NaN`). The response also
+carries a `summary`: `cumulativePlannedQty`, `cumulativeActualQty`, and an `overallAchievementPct`
+computed the same guarded way over the cumulative totals (not an average of each day's
+`achievementPct` — same "sum first, then divide" principle Module 4's OEE aggregation already
+established, for the same reason: an average-of-percentages would let a single low-volume day skew
+the overall figure as much as a high-volume one).
+
+**Permissions: same as Scheduling (Module 10).** Read: `STORE_AND_PRODUCTION`; write (i.e.
+`POST /api/production-plan/generate/:orderId`): `PRODUCTION_ONLY` in the permissions table, which
+— combined with `authorize()` always letting `Admin` through — means exactly `Admin` and
+`ProductionManager` can generate a plan, `StoreManager` is read-only, matching this part's spec
+verbatim.
+
+**Gap closed from Part 1, real this time.** Part 1's README note explicitly said `orderId` closed
+the Module 12 gap only at the schema level and that "teaching the search/pending-quantity
+computation to actually use this new linkage is follow-up work for a later part." This
+plan-vs-actual endpoint is that follow-up, for the production-plan feature specifically — it does
+**not** change `GET /api/search`'s `pendingQty: null` behavior, which remains a distinct, still-open
+gap for a future part to address if the client's flow calls for it there too.
 
 ## Assumptions
 

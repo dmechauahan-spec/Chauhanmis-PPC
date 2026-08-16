@@ -22,6 +22,7 @@ import materialsRouter from './modules/materials/materials.routes';
 import shortageReportRouter from './modules/shortageReport/shortageReport.routes';
 import purchaseRequisitionsRouter from './modules/purchaseRequisitions/purchaseRequisitions.routes';
 import schedulingRouter from './modules/scheduling/scheduling.routes';
+import productionPlanRouter from './modules/productionPlan/productionPlan.routes';
 import riskRouter from './modules/risk/risk.routes';
 import searchRouter from './modules/search/search.routes';
 import qcRouter from './modules/qc/qc.routes';
@@ -68,6 +69,7 @@ export function createApp(): Express {
   app.use('/api/shortage-report', shortageReportRouter);
   app.use('/api/purchase-requisitions', purchaseRequisitionsRouter);
   app.use('/api/scheduling', schedulingRouter);
+  app.use('/api/production-plan', productionPlanRouter);
   app.use('/api/risk', riskRouter);
   app.use('/api/search', searchRouter);
   app.use('/api/qc', qcRouter);
