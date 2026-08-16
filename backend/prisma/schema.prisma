@@ -83,6 +83,18 @@ enum MachineStatus {
   Maintenance
 }
 
+// Client Flow Part 3 — Daily QC Inspection. Distinct from Module 13's
+// QcBatch (traceability) — see README "QC Batches vs. QC Inspections".
+// Server-derived from quantities on create (see qcInspection.service.ts);
+// Pending exists for completeness but is not produced by that derivation —
+// see README.
+enum QcInspectionStatus {
+  Pending
+  Passed
+  PartialPass
+  Rejected
+}
+
 // ============================================================================
 // 1. MODEL MASTER
 // ============================================================================
@@ -275,6 +287,7 @@ model Order {
   qcBatch         QcBatch?
   dailyLogs       DailyProductionLog[]
   productionPlan  DailyProductionPlan[]
+  qcInspections   DailyQcInspection[]
 
   @@index([status])
   @@index([sku])
@@ -580,6 +593,38 @@ model QcBatch {
   testingPlan TestingPlan? @relation(fields: [testingPlanId], references: [id])
 
   @@map("qc_batches")
+}
+
+// ============================================================================
+// CLIENT FLOW PART 3 — DAILY QC INSPECTION (distinct from QcBatch above —
+// this is daily pass/reject/rework tracking, not batch traceability. See
+// README "QC Batches vs. QC Inspections").
+// ============================================================================
+model DailyQcInspection {
+  id             BigInt             @id @default(autoincrement())
+  orderId        String             @map("order_id")
+  inspectionDate DateTime           @map("inspection_date") @db.Date
+  // Optional link to the daily_production_log row this QC's — validated (if
+  // provided) to exist AND belong to the same orderId at the service layer,
+  // not a DB-level FK (matching how Part 2's lineId/machineId on
+  // daily_production_plan are also plain, unenforced strings). See README.
+  dailyLogId     String?            @map("daily_log_id")
+  producedQty    Decimal            @map("produced_qty") @db.Decimal(12, 2)
+  sampleQty      Decimal?           @map("sample_qty") @db.Decimal(12, 2)
+  passedQty      Decimal            @map("passed_qty") @db.Decimal(12, 2)
+  rejectedQty    Decimal            @map("rejected_qty") @db.Decimal(12, 2)
+  reworkQty      Decimal            @default(0) @map("rework_qty") @db.Decimal(12, 2)
+  defectType     String?            @map("defect_type")
+  qcStatus       QcInspectionStatus @map("qc_status")
+  remarks        String?
+  inspectorName  String             @map("inspector_name")
+  createdAt      DateTime           @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [orderId], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([inspectionDate])
+  @@map("daily_qc_inspections")
 }
 
 // ============================================================================

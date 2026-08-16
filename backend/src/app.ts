@@ -26,6 +26,7 @@ import productionPlanRouter from './modules/productionPlan/productionPlan.routes
 import riskRouter from './modules/risk/risk.routes';
 import searchRouter from './modules/search/search.routes';
 import qcRouter from './modules/qc/qc.routes';
+import qcInspectionRouter from './modules/qcInspection/qcInspection.routes';
 import dashboardRouter from './modules/dashboard/dashboard.routes';
 import authRouter from './modules/auth/auth.routes';
 
@@ -73,6 +74,7 @@ export function createApp(): Express {
   app.use('/api/risk', riskRouter);
   app.use('/api/search', searchRouter);
   app.use('/api/qc', qcRouter);
+  app.use('/api/qc-inspections', qcInspectionRouter);
   app.use('/api/dashboard', dashboardRouter);
   app.use('/api/auth', authRouter);
 

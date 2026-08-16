@@ -54,6 +54,7 @@ tags:
   - name: Search
   - name: QC
   - name: Testing Plans
+  - name: QC Inspections
   - name: Dashboard
 
 components:
@@ -979,6 +980,50 @@ components:
             generatedCount: { type: integer }
             skippedCount: { type: integer }
             failedCount: { type: integer }
+
+    DailyQcInspection:
+      type: object
+      description: >
+        Client Flow Part 3. Daily QC inspection results — UNRELATED to QcBatch above despite the
+        shared "QC" name; see README "QC Batches vs. QC Inspections" before touching either.
+      properties:
+        id: { type: integer }
+        orderId: { type: string }
+        inspectionDate: { type: string, format: date }
+        dailyLogId:
+          type: string
+          nullable: true
+          description: Optional link to a daily_production_log row — validated to exist and belong to the same orderId, not a DB-level FK.
+        producedQty: { type: number }
+        sampleQty: { type: number, nullable: true }
+        passedQty: { type: number }
+        rejectedQty: { type: number }
+        reworkQty: { type: number, default: 0 }
+        defectType: { type: string, nullable: true }
+        qcStatus:
+          type: string
+          enum: [Pending, Passed, PartialPass, Rejected]
+          readOnly: true
+          description: Always server-derived from passedQty/rejectedQty/reworkQty — never accepted from the request body. See README.
+        remarks: { type: string, nullable: true }
+        inspectorName: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    QcInspectionSummary:
+      type: object
+      properties:
+        orderId: { type: string }
+        totalProducedQty: { type: number }
+        totalPassedQty: { type: number }
+        totalRejectedQty: { type: number }
+        totalReworkQty: { type: number }
+        acceptedProductionQty:
+          type: number
+          description: Exactly totalPassedQty — the client's "Accepted Production" concept, named explicitly. Consumed by Part 4's completion prediction.
+        overallPassRatePct:
+          type: number
+          nullable: true
+          description: 'totalPassedQty / totalProducedQty * 100. Null only if totalProducedQty is 0.'
 
     ProductionPeriodRow:
       type: object
@@ -2858,6 +2903,86 @@ paths:
       responses:
         '200': { description: Deleted successfully }
         '404': { description: id not found }
+
+  /qc-inspections:
+    get:
+      tags: [QC Inspections]
+      summary: List daily QC inspections, filterable by order and date range
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: orderId
+          in: query
+          schema: { type: string }
+        - name: dateFrom
+          in: query
+          schema: { type: string, format: date }
+        - name: dateTo
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200': { description: Paginated list of DailyQcInspection, sorted by inspectionDate desc }
+    post:
+      tags: [QC Inspections]
+      summary: Record a daily QC inspection
+      description: >
+        Client Flow Part 3. qcStatus is always server-derived from passedQty/rejectedQty/reworkQty
+        — any qcStatus in the request body is silently ignored. passedQty + rejectedQty + reworkQty
+        may be less than producedQty (partial-sample inspection) but must not exceed it by more
+        than 0.01 (rounding tolerance only). dailyLogId, if provided, must exist and belong to the
+        same orderId. See README "Client Flow Part 3".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DailyQcInspection' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DailyQcInspection' }
+        '400': { description: 'Quantity sum exceeds producedQty beyond tolerance, or dailyLogId is unknown / belongs to a different order' }
+        '404': { description: Unknown orderId }
+
+  /qc-inspections/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [QC Inspections]
+      summary: Inspection detail
+      responses:
+        '200':
+          description: DailyQcInspection
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DailyQcInspection' }
+        '404': { description: Not found }
+
+  /qc-inspections/summary/{orderId}:
+    parameters:
+      - name: orderId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [QC Inspections]
+      summary: Cumulative QC summary for an order
+      description: >
+        Client Flow Part 3. acceptedProductionQty is exactly totalPassedQty — the client's
+        "Accepted Production" concept — the number Part 4's completion prediction consumes. A
+        reusable service function (getQcInspectionSummary), not just this HTTP handler's private
+        logic. See README "Client Flow Part 3".
+      responses:
+        '200':
+          description: QcInspectionSummary (all-zero sums and overallPassRatePct null if the order has no inspections yet)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QcInspectionSummary' }
+        '404': { description: Unknown orderId }
 
   /dashboard/production:
     get:

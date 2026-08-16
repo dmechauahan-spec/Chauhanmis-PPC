@@ -34,6 +34,7 @@ export const PERMISSIONS = {
   productionPlan: { read: STORE_AND_PRODUCTION, write: PRODUCTION_ONLY }, // same as Scheduling — see README "Client Flow Part 2"
   risk: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // read-only module — write unused
   qcBatches: { read: STORE_AND_PRODUCTION, write: PRODUCTION_ONLY },
+  qcInspections: { read: STORE_AND_PRODUCTION, write: PRODUCTION_ONLY }, // same floor/quality domain as QC Batches — see README "Client Flow Part 3"
   qcTestingPlans: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // master data, not a floor action
   hrTeams: { read: STORE_AND_PRODUCTION, write: PRODUCTION_ONLY },
 

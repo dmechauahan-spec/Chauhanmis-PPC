@@ -21,9 +21,11 @@ below for the full role model, permission matrix, and rationale.
 Also in progress: a **5-part Client Flow addition** implementing the client's detailed PPC flow
 document on top of the 14 completed modules — Machine master data, a daily Plan-vs-Actual
 comparison, daily QC inspection results, a QC-driven completion forecast, and a formal order
-closure summary. **Parts 1 (Machine master data + Order/Daily Log extensions) and 2 (Daily
-Production Plan + Plan vs. Actual) are complete**; Parts 3–5 are not yet built. See "Client Flow
-Part 1" and "Client Flow Part 2" below.
+closure summary. **Parts 1 (Machine master data + Order/Daily Log extensions), 2 (Daily Production
+Plan + Plan vs. Actual), and 3 (Daily QC Inspection) are complete**; Parts 4–5 are not yet built.
+See "Client Flow Part 1", "Client Flow Part 2", and "Client Flow Part 3" below — Part 3 in
+particular is worth reading before touching either QC module, since it explains how "QC Batches"
+(Module 13) and "QC Inspections" (Part 3) are unrelated despite the shared name.
 
 > **⚠️ Known limitation you will hit immediately if you use search:** `GET /api/search`'s order
 > results always return `pendingQty: null` — there is no schema linkage between production output
@@ -1625,6 +1627,92 @@ computation to actually use this new linkage is follow-up work for a later part.
 plan-vs-actual endpoint is that follow-up, for the production-plan feature specifically — it does
 **not** change `GET /api/search`'s `pendingQty: null` behavior, which remains a distinct, still-open
 gap for a future part to address if the client's flow calls for it there too.
+
+### Client Flow Part 3 — Daily QC Inspection
+
+**Part 3** of the 5-part Client Flow addition (see "Client Flow Part 1" above). Adds daily QC
+inspection tracking: every day production happens, QC records pass/reject/rework counts against it.
+
+> **⚠️ "QC Batches" vs. "QC Inspections" — two completely different modules that happen to share
+> the word "QC". Read this before touching either.**
+>
+> - **QC Batches (Module 13, `/api/qc`, `qc_batches`/`testing_plans` tables)** is **traceability**:
+>   a batch number, barcode value, and serial-number range generated **once** when an order is
+>   scheduled, so every unit produced can be traced back to its batch. It has no concept of daily
+>   pass/reject counts.
+> - **QC Inspections (Part 3, `/api/qc-inspections`, `daily_qc_inspections` table, this section)**
+>   is **daily inspection results**: every day production happens, QC inspects what was made and
+>   records how many passed, were rejected, or need rework. It has no concept of batch numbers,
+>   barcodes, or serial ranges.
+>
+> They are unrelated data models serving unrelated purposes, deliberately kept in separate module
+> folders (`src/modules/qc/` vs. `src/modules/qcInspection/`) and separate API prefixes (`/api/qc`
+> vs. `/api/qc-inspections`) specifically so they're never confused or accidentally merged. An
+> order can have both a QC batch AND any number of daily QC inspections — they coexist, they don't
+> compete.
+
+**`daily_qc_inspections` — one row per inspection event.** `orderId` (required), `inspectionDate`,
+an optional `dailyLogId` link to the `daily_production_log` row this inspection's production came
+from (validated — see below — but **not** a DB-level foreign key, matching how Part 2's
+`daily_production_plan.lineId`/`machineId` are also plain, service-validated strings rather than
+enforced FKs), `producedQty`, an optional `sampleQty` (how many of `producedQty` were actually
+inspected, for partial-sample inspection), `passedQty`, `rejectedQty`, `reworkQty` (defaults to 0),
+`defectType`, `qcStatus` (server-derived, see below), `remarks`, and a required `inspectorName`.
+
+**The quantity-tolerance rule.** `passedQty + rejectedQty + reworkQty` is allowed to be **less
+than** `producedQty` — partial-sample inspection is realistic; not every unit produced has
+necessarily been inspected yet, and this endpoint doesn't force a caller to account for 100% of
+`producedQty` in one inspection row. What it does reject is the sum **exceeding** `producedQty` by
+more than `QUANTITY_SUM_TOLERANCE = 0.01` (`qcInspection.schema.ts`) — that small an allowance
+exists purely to absorb harmless floating-point/rounding slop at the `Decimal(12,2)` boundary, not
+to permit real overcounting (categorizing more units as passed/rejected/reworked than were actually
+produced is always a data error, tolerance or not).
+
+**`qcStatus` is always server-derived, never client-supplied.** `deriveQcStatus(passedQty,
+rejectedQty, reworkQty)` in `qcInspection.service.ts` — small enough to live inline rather than in
+its own file, matching this part's own "don't force isolation for a one-liner" guidance — reduces
+to three reachable outcomes:
+
+- `passedQty > 0` and nothing rejected/reworked → **`Passed`**
+- `passedQty > 0` and something rejected and/or reworked → **`PartialPass`**
+- `passedQty <= 0` (including the all-zero edge case: nothing recorded as passed, rejected, OR
+  reworked) → **`Rejected`**
+
+Any `qcStatus` a caller sends in the request body is silently dropped (it isn't in
+`createQcInspectionSchema`'s accepted fields at all) — same "ignore any client override" pattern
+Module 3's daily logs already use for `absentEmployees`/`attendancePct`. **`Pending`** exists in
+the `QcInspectionStatus` enum for completeness (representing "not yet inspected") but this create
+endpoint never produces it — every call supplies real quantities, so there's no "not yet inspected"
+state to represent here. The all-zero edge case resolving to `Rejected` (rather than some other
+status, or requiring a separate code path) is a judgment call, not a workflow this part tries to
+build — if a genuine "inspection pending, no numbers yet" flow is ever wanted, that would be a
+distinct future feature (e.g. a nullable-quantities draft row), not implied by anything built here.
+
+**`dailyLogId` cross-order validation.** If provided, it must both (a) exist as a real
+`daily_production_log.logId` and (b) belong to the **same** `orderId` as the inspection being
+created — checked explicitly at the service layer (`validateDailyLogBelongsToOrder`), not left to
+a DB constraint. A `dailyLogId` that exists but points at a different order's daily log is rejected
+just as clearly as one that doesn't exist at all: silently accepting it would let one order's QC
+inspection reference another order's production entry, corrupting exactly the kind of
+order-to-production linkage Part 1/Part 2 were built to establish.
+
+**`GET /api/qc-inspections/summary/:orderId` and `acceptedProductionQty`.** Returns
+`{ totalProducedQty, totalPassedQty, totalRejectedQty, totalReworkQty, acceptedProductionQty,
+overallPassRatePct }`, computed via Prisma's `aggregate` (`_sum`) over every inspection row for the
+order — `overallPassRatePct` is `null` (never a division-by-zero `NaN`/`Infinity`) when
+`totalProducedQty` is 0. `acceptedProductionQty` is **exactly** `totalPassedQty`, given its own,
+explicitly-named field rather than making a caller infer "accepted production" means "the passed
+total" — this is deliberately the client's own "Accepted Production" vocabulary, named so it reads
+unambiguously wherever it's consumed. That matters concretely: **Part 4's completion prediction is
+the first consumer**, and `getQcInspectionSummary` (`qcInspection.service.ts`) is written as a
+plain, reusable exported function returning this shape — not just an HTTP handler's private logic —
+specifically so Part 4 can call it directly instead of re-deriving the same sums a second time.
+
+**Permissions.** Read: `STORE_AND_PRODUCTION`; write (`POST /api/qc-inspections`):
+`PRODUCTION_ONLY` in the permissions table — combined with `authorize()` always letting `Admin`
+through, this means `Admin` and `ProductionManager` can record inspections, `StoreManager` is
+read-only. Identical to QC Batches' (Module 13) permission shape, for the same reason: this is the
+same floor/quality domain, and `StoreManager` doesn't write QC data of either kind.
 
 ## Assumptions
 
