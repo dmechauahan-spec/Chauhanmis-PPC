@@ -35,6 +35,11 @@ export const riskKeys = {
   summary: () => ["risk", "summary"] as const,
 };
 
+export const productionPlanKeys = {
+  plan: (orderId: string) => ["productionPlan", "plan", orderId] as const,
+  planVsActual: (orderId: string) => ["productionPlan", "plan-vs-actual", orderId] as const,
+};
+
 export const productsKeys = {
   lists: () => ["products", "list"] as const,
   list: (filters: Record<string, unknown>) => [...productsKeys.lists(), filters] as const,

@@ -348,6 +348,53 @@ export interface AtRiskRecommendationsReport {
   recommendations: RiskRecommendationsResult | null;
 }
 
+// ---- Production Plan (Client Flow Part 2) — POST /api/production-plan/generate/:orderId,
+// GET /api/production-plan/:orderId, GET /api/production-plan/:orderId/plan-vs-actual ----
+
+// productionPlan.service.ts#toRow() explicitly Number()s plannedQty server-
+// side (unlike OrderSchedule's Decimal fields above) — arrives as a real
+// number, not a numeric string.
+export interface DailyProductionPlanRow {
+  id: number;
+  orderId: string;
+  planDate: string;
+  lineId: string | null;
+  machineId: string | null;
+  plannedQty: number;
+}
+
+export interface PlanVsActualGapReason {
+  reason: string;
+  totalMinutes: number;
+}
+
+// `noDataLogged: true` means no daily_production_log row exists for this
+// date at all — distinct from a verified zero output. actualQty/gap/
+// achievementPct are still computed (as 0 / -plannedQty / 0) in that case,
+// but the UI must not render them as real figures — see production-plan-
+// panel.tsx.
+export interface PlanVsActualDay {
+  date: string;
+  plannedQty: number;
+  actualQty: number;
+  gap: number;
+  achievementPct: number | null;
+  gapReasons: PlanVsActualGapReason[];
+  noDataLogged: boolean;
+}
+
+export interface PlanVsActualSummary {
+  cumulativePlannedQty: number;
+  cumulativeActualQty: number;
+  overallAchievementPct: number | null;
+}
+
+export interface PlanVsActualResult {
+  orderId: string;
+  days: PlanVsActualDay[];
+  summary: PlanVsActualSummary;
+}
+
 // ---- RM Inventory (Module 1 write side) — GET/POST/PATCH /api/rm-inventory ----
 
 // Raw rm_inventory row as ppc-backend's rmInventory.service returns it —
