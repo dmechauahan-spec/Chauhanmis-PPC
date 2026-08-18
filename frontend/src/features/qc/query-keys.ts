@@ -13,3 +13,16 @@ export const testingPlansKeys = {
   lists: () => [...testingPlansKeys.all, "list"] as const,
   list: (filters: Record<string, unknown>) => [...testingPlansKeys.lists(), filters] as const,
 };
+
+// Distinct top-level key from qcKeys above — separate module, separate
+// backend prefix (/api/qc-inspections vs. /api/qc), see README "QC Batches
+// vs. QC Inspections".
+export const qcInspectionsKeys = {
+  all: ["qcInspections"] as const,
+  lists: () => [...qcInspectionsKeys.all, "list"] as const,
+  list: (filters: Record<string, unknown>) => [...qcInspectionsKeys.lists(), filters] as const,
+  details: () => [...qcInspectionsKeys.all, "detail"] as const,
+  detail: (id: string) => [...qcInspectionsKeys.details(), id] as const,
+  summaries: () => [...qcInspectionsKeys.all, "summary"] as const,
+  summary: (orderId: string) => [...qcInspectionsKeys.summaries(), orderId] as const,
+};

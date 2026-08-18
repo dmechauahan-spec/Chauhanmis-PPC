@@ -6,6 +6,7 @@ import { PriorityBadge, OrderStatusBadge } from "./order-badges";
 import { CtbPanel } from "./panels/ctb-panel";
 import { SchedulePanel } from "./panels/schedule-panel";
 import { ProductionPlanPanel } from "./panels/production-plan-panel";
+import { QcInspectionsPanel } from "./panels/qc-inspections-panel";
 import { RiskPanel } from "./panels/risk-panel";
 import { StatusHistoryPanel } from "./panels/status-history-panel";
 import { ChangeStatusActions } from "./status-actions";
@@ -143,6 +144,10 @@ export function OrderDetailPage() {
 
       <div className="mt-5">
         <ProductionPlanPanel orderId={order.orderId} canAct={canAct} />
+      </div>
+
+      <div className="mt-5">
+        <QcInspectionsPanel orderId={order.orderId} canAct={canAct} />
       </div>
 
       <div className="mt-5">

@@ -12,6 +12,7 @@ import {
   FileText,
   ScanBarcode,
   ClipboardCheck,
+  Microscope,
   Package,
   Factory,
   Wrench,
@@ -72,6 +73,10 @@ export const NAV_GROUPS: NavGroup[] = [
     label: "Quality",
     items: [
       { label: "QC Batches", to: "/qc-batches", icon: ScanBarcode },
+      // Distinct icon from QC Batches (barcode/traceability) and Testing
+      // Plans (clipboard/checklist) so all three don't blur together at a
+      // glance — see README "QC Batches vs. QC Inspections".
+      { label: "QC Inspections", to: "/qc-inspections", icon: Microscope },
       { label: "Testing Plans", to: "/testing-plans", icon: ClipboardCheck },
     ],
   },

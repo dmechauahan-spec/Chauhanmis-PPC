@@ -958,6 +958,63 @@ export interface UpdateTestingPlanPayload {
   description?: string | null;
 }
 
+// ---- QC Inspections (Client Flow Part 3) — GET/POST /api/qc-inspections ----
+//
+// Deliberately unrelated to QcBatchRow/QcBatchDetail above despite the
+// shared "QC" name — see README "QC Batches vs. QC Inspections". This is
+// daily pass/reject/rework tracking, not batch traceability.
+
+export type QcInspectionStatus = "Pending" | "Passed" | "PartialPass" | "Rejected";
+
+// qcInspection.service.ts#toOutput() explicitly Number()s every quantity
+// field server-side (unlike OrderSchedule's Decimal fields elsewhere in
+// this file) — they arrive as real numbers, not numeric strings.
+export interface QcInspection {
+  id: number;
+  orderId: string;
+  inspectionDate: string;
+  dailyLogId: string | null;
+  producedQty: number;
+  sampleQty: number | null;
+  passedQty: number;
+  rejectedQty: number;
+  reworkQty: number;
+  defectType: string | null;
+  qcStatus: QcInspectionStatus;
+  remarks: string | null;
+  inspectorName: string;
+  createdAt: string;
+}
+
+export interface CreateQcInspectionPayload {
+  orderId: string;
+  inspectionDate: string;
+  dailyLogId?: string;
+  producedQty: number;
+  sampleQty?: number;
+  passedQty: number;
+  rejectedQty: number;
+  reworkQty?: number;
+  defectType?: string;
+  remarks?: string;
+  inspectorName: string;
+}
+
+// GET /api/qc-inspections/summary/:orderId — this IS the client's
+// "Accepted Production" concept (acceptedProductionQty === totalPassedQty,
+// named explicitly rather than left for a consumer to infer). Consumed by
+// the Order detail page's summary panel here, and by Part 4's completion
+// forecast.
+export interface QcInspectionSummary {
+  orderId: string;
+  totalProducedQty: number;
+  totalPassedQty: number;
+  totalRejectedQty: number;
+  totalReworkQty: number;
+  acceptedProductionQty: number;
+  overallPassRatePct: number | null;
+}
+
 // ---- Daily Logs (Module 3 + Module 4) — GET/POST/PATCH /api/daily-logs ----
 
 export const DOWNTIME_REASONS = [

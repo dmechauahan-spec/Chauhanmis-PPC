@@ -23,6 +23,9 @@ import { DailyLogFormPage } from "@/features/daily-logs/daily-log-form-page";
 import { DailyLogDetailPage } from "@/features/daily-logs/daily-log-detail-page";
 import { QcBatchesListPage } from "@/features/qc/qc-batches-list-page";
 import { QcBatchDetailPage } from "@/features/qc/qc-batch-detail-page";
+import { QcInspectionsListPage } from "@/features/qc/qc-inspections-list-page";
+import { QcInspectionFormPage } from "@/features/qc/qc-inspection-form-page";
+import { QcInspectionDetailPage } from "@/features/qc/qc-inspection-detail-page";
 import { TestingPlansPage } from "@/features/qc/testing-plans-page";
 import { ProductsPage } from "@/features/admin/products-page";
 import { LinesPage } from "@/features/admin/lines-page";
@@ -80,6 +83,9 @@ export default function App() {
         <Route path="/purchase-requisitions/:prId" element={<PrDetailPage />} />
         <Route path="/qc-batches" element={<QcBatchesListPage />} />
         <Route path="/qc-batches/:batchNumber" element={<QcBatchDetailPage />} />
+        <Route path="/qc-inspections" element={<QcInspectionsListPage />} />
+        <Route path="/qc-inspections/new" element={<QcInspectionFormPage />} />
+        <Route path="/qc-inspections/:id" element={<QcInspectionDetailPage />} />
         <Route path="/testing-plans" element={<TestingPlansPage />} />
         <Route path="/products" element={<ProductsPage />} />
         <Route path="/lines" element={<LinesPage />} />
