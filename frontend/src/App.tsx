@@ -4,6 +4,7 @@ import { ProtectedRoute } from "@/components/protected-route";
 import { LoginPage } from "@/features/auth/login-page";
 import { ForgotPasswordPage } from "@/features/auth/forgot-password-page";
 import { DashboardPage } from "@/features/dashboard/dashboard-page";
+import { OrderStatusDashboardPage } from "@/features/order-status-dashboard/order-status-dashboard-page";
 import { StyleGuidePage } from "@/features/style-guide/style-guide-page";
 import { OrdersListPage } from "@/features/orders/orders-list-page";
 import { OrderDetailPage } from "@/features/orders/order-detail-page";
@@ -62,6 +63,7 @@ export default function App() {
         }
       >
         <Route index element={<DashboardPage />} />
+        <Route path="/order-status-dashboard" element={<OrderStatusDashboardPage />} />
         <Route path="/orders" element={<OrdersListPage />} />
         <Route path="/orders/new" element={<CreateOrderPage />} />
         <Route path="/orders/:orderId" element={<OrderDetailPage />} />

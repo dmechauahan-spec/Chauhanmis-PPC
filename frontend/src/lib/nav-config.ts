@@ -19,6 +19,7 @@ import {
   Users2,
   UserCog,
   TrendingUp,
+  Table2,
 } from "lucide-react";
 import type { UserRole } from "@/types/api";
 
@@ -47,7 +48,15 @@ export interface NavGroup {
 export const NAV_GROUPS: NavGroup[] = [
   {
     label: "Overview",
-    items: [{ label: "Dashboard", to: "/", icon: Gauge }],
+    items: [
+      { label: "Dashboard", to: "/", icon: Gauge },
+      // Client Flow Part 5 — the client's centerpiece screen (every active
+      // order's Order -> Line -> Machine -> Plan -> Actual -> QC -> Balance
+      // -> Expected Completion, one row each). Placed second in Overview
+      // (top of the whole rail), not buried in Production, so it gets real
+      // visual priority rather than reading as just another module page.
+      { label: "Order Status", to: "/order-status-dashboard", icon: Table2 },
+    ],
   },
   {
     label: "Production",

@@ -1281,3 +1281,44 @@ export interface SearchResponse {
   products: ProductSearchResult[];
   lines: LineSearchResult[];
 }
+
+// ---- Order Status Dashboard (Client Flow Part 5) — GET /api/order-status-dashboard ----
+//
+// The client's centerpiece screen — Order -> Line -> Machine -> Plan ->
+// Actual -> QC -> Balance -> Expected Completion, one row per non-Closed
+// order. A pure composition layer server-side (every field is read or
+// reused from Parts 1-4/existing modules, nothing recomputed) — this is
+// ONE endpoint, ONE query, no per-row re-fetching needed client-side. See
+// README "Client Flow Part 5".
+
+// statusBadge.ts's STATUS_BADGE map — the literal strings the backend
+// returns (emoji baked in), matched against exactly by
+// dashboard-status-badge.tsx rather than re-deriving the state client-side.
+export type OrderStatusDashboardBadge = "🟢 On Track" | "🟡 At Risk" | "🔴 Delayed" | "🔵 QC Pending" | "✅ Completed";
+
+export interface OrderStatusDashboardRow {
+  orderId: string;
+  client: string;
+  sku: string;
+  product: string;
+  qty: number;
+  priority: OrderPriority;
+  dueDate: string | null;
+  status: OrderStatus;
+  line: { lineId: string; lineName: string | null } | null;
+  // Always [] today — daily_production_log has no machineId column yet
+  // (Part 1's actual scope didn't add one), a documented limitation, not a
+  // bug — see orderStatusDashboard.service.ts's own comment. Typed as a
+  // real string[] (not `never[]`) since the UI should render correctly the
+  // day a future part populates it.
+  machines: string[];
+  /** Cumulative planned qty THROUGH TODAY — null if no plan exists yet (Part 2). */
+  plan: number | null;
+  /** Cumulative actual production to date. */
+  actual: number;
+  qc: { passedQty: number; rejectedQty: number; reworkQty: number };
+  /** order.qty - qc.passedQty, taken directly from Part 4A's forecast — never recomputed independently. */
+  balanceQty: number;
+  expectedCompletionDate: string | null;
+  statusBadge: OrderStatusDashboardBadge;
+}
