@@ -41,11 +41,23 @@ export const dailyLogFormSchema = z
     shift: z.string().optional(),
     lineId: z.string().optional(),
     modelId: z.string().optional(),
+    // Client Flow Part 1 — the link this whole 5-part addition's Order ->
+    // Plan -> Actual -> QC chain depends on (Parts 2/3/5 all read "this
+    // order's" production off it). Free text, not a picker, for the same
+    // reason as QC Inspections' own Order ID field (see
+    // qc-inspection-schema.ts) — validated server-side either way.
+    orderId: z.string().optional(),
     totalEmployees: optionalCoercedNumber(z.number().int().nonnegative()),
     presentEmployees: optionalCoercedNumber(z.number().int().nonnegative()),
     plannedMinutes: optionalCoercedNumber(z.number().nonnegative()),
     totalOutputQty: optionalCoercedNumber(z.number().nonnegative()),
     goodQty: optionalCoercedNumber(z.number().nonnegative()),
+    // Self-reported by production, distinct from QC's own authoritative
+    // pass/reject/rework numbers (Part 3's QC Inspections) — see README
+    // "Client Flow Part 1". Never conflated with QC's figures anywhere in
+    // this app.
+    rejectedQty: optionalCoercedNumber(z.number().nonnegative()),
+    reworkQty: optionalCoercedNumber(z.number().nonnegative()),
     notes: z.string().optional(),
     downtimeEntries: z.array(downtimeEntryFormSchema).optional(),
     stationAssignments: z.array(stationAssignmentRowSchema).optional(),

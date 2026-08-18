@@ -70,6 +70,14 @@ export function DailyLogDetailPage() {
             <span>·</span>
             <span>{log.modelName ?? "No model set"}</span>
             <span>·</span>
+            {log.orderId ? (
+              <Link to={`/orders/${log.orderId}`} className="font-mono text-signal-amber hover:underline">
+                {log.orderId}
+              </Link>
+            ) : (
+              <span>No order linked</span>
+            )}
+            <span>·</span>
             <span>
               Saved {formatDateTime(log.savedAt)}
               {log.savedBy && ` by ${log.savedBy}`}
@@ -93,6 +101,8 @@ export function DailyLogDetailPage() {
         <Field label="Attendance %" value={log.attendancePct != null ? `${formatDecimal(log.attendancePct, 1)}%` : "—"} mono />
         <Field label="Total Output Qty" value={log.totalOutputQty != null ? formatDecimal(log.totalOutputQty, 0) : "—"} mono />
         <Field label="Good Qty" value={log.goodQty != null ? formatDecimal(log.goodQty, 0) : "—"} mono />
+        <Field label="Rejected Qty" value={log.rejectedQty != null ? formatDecimal(log.rejectedQty, 0) : "—"} mono />
+        <Field label="Rework Qty" value={log.reworkQty != null ? formatDecimal(log.reworkQty, 0) : "—"} mono />
         <Field label="Planned Minutes" value={log.plannedMinutes != null ? formatDecimal(log.plannedMinutes, 0) : "—"} mono />
         <Field label="Active Lines" value={log.activeLinesCount != null ? String(log.activeLinesCount) : "—"} mono />
         <Field label="Takt Time Override" value={log.taktTimeOverride != null ? formatDecimal(log.taktTimeOverride, 2) : "—"} mono />

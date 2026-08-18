@@ -1121,6 +1121,13 @@ export interface DailyLog {
   plannedMinutes: string | null;
   totalOutputQty: string | null;
   goodQty: string | null;
+  // Client Flow Part 1 — the order this production run was logged
+  // against, plus production's own self-reported (not QC-verified)
+  // reject/rework counts. See CreateDailyLogPayload/UpdateDailyLogPayload
+  // and README "Client Flow Part 1".
+  orderId: string | null;
+  rejectedQty: string | null;
+  reworkQty: string | null;
   downtimeEntries: DowntimeEntry[];
 }
 
@@ -1150,6 +1157,9 @@ export interface CreateDailyLogPayload {
   plannedMinutes?: number;
   totalOutputQty?: number;
   goodQty?: number;
+  orderId?: string;
+  rejectedQty?: number;
+  reworkQty?: number;
 }
 
 // PATCH /api/daily-logs/:logId — every field nullable+optional
@@ -1170,6 +1180,9 @@ export interface UpdateDailyLogPayload {
   plannedMinutes?: number | null;
   totalOutputQty?: number | null;
   goodQty?: number | null;
+  orderId?: string | null;
+  rejectedQty?: number | null;
+  reworkQty?: number | null;
 }
 
 // GET /api/daily-logs/summary/downtime-by-reason

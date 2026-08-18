@@ -1,7 +1,8 @@
+import * as React from "react";
 import { useForm, Controller, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useNavigate, useParams, Link } from "react-router";
-import { ArrowLeft, TriangleAlert } from "lucide-react";
+import { ArrowLeft, TriangleAlert, CircleCheck, CircleX, Search } from "lucide-react";
 import { useCreateDailyLog, useDailyLog, useUpdateDailyLog } from "./use-daily-logs";
 import { dailyLogFormSchema, type DailyLogFormInput, type DailyLogFormValues } from "./daily-log-schema";
 import { toCreatePayload, toUpdatePayload, stationAssignmentsToRows } from "./daily-log-payload";
@@ -11,6 +12,8 @@ import { DowntimeEntriesField } from "./downtime-entries-field";
 import { StationAssignmentsField } from "./station-assignments-field";
 import { useLinesForFilter } from "@/features/scheduling/use-lines";
 import { useProductsForPicker } from "@/features/orders/use-products";
+import { useOrder } from "@/features/orders/use-orders";
+import { OrderStatusBadge } from "@/features/orders/order-badges";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -44,11 +47,14 @@ function buildDefaultValues(log: DailyLog | undefined): DailyLogFormInput {
     shift: log.shift ?? undefined,
     lineId: log.lineId ?? undefined,
     modelId: log.modelId ?? undefined,
+    orderId: log.orderId ?? undefined,
     totalEmployees: log.totalEmployees ?? undefined,
     presentEmployees: log.presentEmployees ?? undefined,
     plannedMinutes: log.plannedMinutes != null ? Number(log.plannedMinutes) : undefined,
     totalOutputQty: log.totalOutputQty != null ? Number(log.totalOutputQty) : undefined,
     goodQty: log.goodQty != null ? Number(log.goodQty) : undefined,
+    rejectedQty: log.rejectedQty != null ? Number(log.rejectedQty) : undefined,
+    reworkQty: log.reworkQty != null ? Number(log.reworkQty) : undefined,
     notes: log.notes ?? undefined,
     downtimeEntries: [],
     stationAssignments: stationAssignmentsToRows(log.stationAssignments),
@@ -169,6 +175,17 @@ function DailyLogFormBody({
   const watchedTotal = useWatch({ control, name: "totalEmployees" });
   const watchedPresent = useWatch({ control, name: "presentEmployees" });
   const watchedPlannedMinutes = useWatch({ control, name: "plannedMinutes" });
+  const watchedOrderId = useWatch({ control, name: "orderId" });
+
+  // Debounced live order lookup — same convention as QC Inspections' own
+  // Order ID field (see qc-inspection-form-page.tsx) for why this is a
+  // plain text field with a lookup preview rather than a full combobox.
+  const [debouncedOrderId, setDebouncedOrderId] = React.useState(existingLog?.orderId ?? "");
+  React.useEffect(() => {
+    const handle = setTimeout(() => setDebouncedOrderId(watchedOrderId?.trim() ?? ""), 350);
+    return () => clearTimeout(handle);
+  }, [watchedOrderId]);
+  const orderLookup = useOrder(debouncedOrderId || undefined);
 
   const selectedLine = lines.find((l) => l.lineId === watchedLineId);
   // Only narrow the model list when the selected line actually has
@@ -301,6 +318,17 @@ function DailyLogFormBody({
             </div>
 
             <div className="flex flex-col gap-1.5">
+              <Label htmlFor="orderId">Order (optional)</Label>
+              <Input id="orderId" placeholder="e.g. SO-1001" className="font-mono" {...register("orderId")} />
+              <OrderLookupPreview
+                orderId={debouncedOrderId}
+                isPending={orderLookup.isPending}
+                isError={orderLookup.isError}
+                order={orderLookup.data}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
               <Label htmlFor="notes">Notes (optional)</Label>
               <textarea
                 id="notes"
@@ -375,6 +403,20 @@ function DailyLogFormBody({
                 {errors.goodQty && <p className="text-xs text-status-critical">{errors.goodQty.message}</p>}
               </div>
             </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="rejectedQty">Rejected Qty (optional)</Label>
+                <Input id="rejectedQty" type="number" min={0} step="0.01" {...register("rejectedQty")} />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="reworkQty">Rework Qty (optional)</Label>
+                <Input id="reworkQty" type="number" min={0} step="0.01" {...register("reworkQty")} />
+              </div>
+            </div>
+            <p className="text-xs text-ink-faint">
+              Self-reported by production — distinct from QC&apos;s own authoritative pass/reject/rework counts (recorded separately
+              under QC Inspections).
+            </p>
           </CardContent>
         </Card>
 
@@ -413,6 +455,53 @@ function DailyLogFormBody({
           </Button>
         </div>
       </form>
+    </div>
+  );
+}
+
+// Mirrors qc-inspection-form-page.tsx's identical component — same
+// debounced-lookup pattern, same reasoning for why this is a text field
+// with a preview rather than a full combobox.
+function OrderLookupPreview({
+  orderId,
+  isPending,
+  isError,
+  order,
+}: {
+  orderId: string;
+  isPending: boolean;
+  isError: boolean;
+  order: ReturnType<typeof useOrder>["data"];
+}) {
+  if (!orderId) return null;
+
+  if (isPending) {
+    return (
+      <p className="flex items-center gap-1.5 text-xs text-ink-faint">
+        <Search className="size-3" />
+        Looking up order…
+      </p>
+    );
+  }
+
+  if (isError || !order) {
+    return (
+      <p className="flex items-center gap-1.5 text-xs text-status-critical">
+        <CircleX className="size-3" />
+        No order found with this ID.
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs text-ink-muted">
+      <CircleCheck className="size-3 text-status-success" />
+      <span>{order.client}</span>
+      <span>·</span>
+      <span className="font-mono">{order.sku}</span>
+      <span>·</span>
+      <span>{order.product}</span>
+      <OrderStatusBadge status={order.status} />
     </div>
   );
 }

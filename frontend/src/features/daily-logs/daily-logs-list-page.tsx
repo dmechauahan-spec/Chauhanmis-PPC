@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import { useNavigate, useSearchParams, Link } from "react-router";
 import { NotebookPen, Plus, TriangleAlert } from "lucide-react";
 import { useDailyLogsList, useDowntimeByReason } from "./use-daily-logs";
 import { useLinesForFilter } from "@/features/scheduling/use-lines";
@@ -218,6 +218,7 @@ export function DailyLogsListPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Date</TableHead>
+                  <TableHead>Order</TableHead>
                   <TableHead>Shift</TableHead>
                   <TableHead>Line</TableHead>
                   <TableHead>Model</TableHead>
@@ -232,6 +233,19 @@ export function DailyLogsListPage() {
                 {data.items.map((log) => (
                   <TableRow key={log.logId} className="cursor-pointer" onClick={() => navigate(`/daily-logs/${log.logId}`)}>
                     <TableCell className="font-mono text-signal-amber">{formatDate(log.logDate)}</TableCell>
+                    <TableCell>
+                      {log.orderId ? (
+                        <Link
+                          to={`/orders/${log.orderId}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="font-mono text-signal-amber hover:underline"
+                        >
+                          {log.orderId}
+                        </Link>
+                      ) : (
+                        <span className="text-ink-faint">—</span>
+                      )}
+                    </TableCell>
                     <TableCell>{log.shift ?? "—"}</TableCell>
                     <TableCell>{log.lineName ?? "—"}</TableCell>
                     <TableCell className="text-ink-muted">{log.modelName ?? "—"}</TableCell>
