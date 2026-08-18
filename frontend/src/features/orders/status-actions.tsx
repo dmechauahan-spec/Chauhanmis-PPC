@@ -1,5 +1,8 @@
+import * as React from "react";
 import { useUpdateOrderStatus } from "./use-orders";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   AlertDialog,
   AlertDialogTrigger,
@@ -42,33 +45,26 @@ export function ChangeStatusActions({ orderId, currentStatus }: { orderId: strin
       <div className="flex flex-wrap gap-2">
         {allowedNext.map((next, i) =>
           CONFIRM_REQUIRED[next] ? (
-            <AlertDialog key={next}>
-              <AlertDialogTrigger asChild>
-                <Button variant={i === 0 ? "default" : "secondary"} disabled={mutation.isPending}>
-                  Move to {STATUS_LABEL[next]}
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Mark this order {STATUS_LABEL[next]}?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    This is the final stage in the pipeline — the order will be marked fully complete.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction onClick={() => mutation.mutate(next)}>
-                    Move to {STATUS_LABEL[next]}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
+            <ConfirmTransitionDialog
+              key={next}
+              next={next}
+              // -> Closed is the one transition CONFIRM_REQUIRED currently
+              // marks true for, and Closed can never coexist with another
+              // confirm-required item in the same allowedNext array (it's
+              // the sole terminal state) — so gating the extra closure
+              // fields on `next === "Closed"` rather than a second lookup
+              // table is equivalent and simpler.
+              collectClosureFields={next === "Closed"}
+              disabled={mutation.isPending}
+              onConfirm={(delayReason, finalRemarks) => mutation.mutate({ newStatus: next, delayReason, finalRemarks })}
+              triggerVariant={i === 0 ? "default" : "secondary"}
+            />
           ) : (
             <Button
               key={next}
               variant={i === 0 ? "default" : "secondary"}
               disabled={mutation.isPending}
-              onClick={() => mutation.mutate(next)}
+              onClick={() => mutation.mutate({ newStatus: next })}
             >
               Move to {STATUS_LABEL[next]}
             </Button>
@@ -77,5 +73,78 @@ export function ChangeStatusActions({ orderId, currentStatus }: { orderId: strin
       </div>
       {mutation.isError && <p className="text-xs text-status-critical">{apiErrorMessage(mutation.error)}</p>}
     </div>
+  );
+}
+
+function ConfirmTransitionDialog({
+  next,
+  collectClosureFields,
+  disabled,
+  onConfirm,
+  triggerVariant,
+}: {
+  next: OrderStatus;
+  collectClosureFields: boolean;
+  disabled: boolean;
+  onConfirm: (delayReason: string | undefined, finalRemarks: string | undefined) => void;
+  triggerVariant: "default" | "secondary";
+}) {
+  const [delayReason, setDelayReason] = React.useState("");
+  const [finalRemarks, setFinalRemarks] = React.useState("");
+
+  function handleOpenChange(open: boolean) {
+    if (!open) {
+      setDelayReason("");
+      setFinalRemarks("");
+    }
+  }
+
+  return (
+    <AlertDialog onOpenChange={handleOpenChange}>
+      <AlertDialogTrigger asChild>
+        <Button variant={triggerVariant} disabled={disabled}>
+          Move to {STATUS_LABEL[next]}
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Mark this order {STATUS_LABEL[next]}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This is the final stage in the pipeline — the order will be marked fully complete.
+            {collectClosureFields && " Both fields below are optional and are captured permanently in this order's closure summary."}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+
+        {collectClosureFields && (
+          <div className="flex flex-col gap-3 py-2">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="delayReason">Delay Reason (optional)</Label>
+              <Input
+                id="delayReason"
+                value={delayReason}
+                onChange={(e) => setDelayReason(e.target.value)}
+                placeholder="e.g. RM shortage delayed the run by 2 days"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="finalRemarks">Final Remarks (optional)</Label>
+              <Input
+                id="finalRemarks"
+                value={finalRemarks}
+                onChange={(e) => setFinalRemarks(e.target.value)}
+                placeholder="e.g. Dispatched in two partial shipments"
+              />
+            </div>
+          </div>
+        )}
+
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={() => onConfirm(delayReason.trim() || undefined, finalRemarks.trim() || undefined)}>
+            Move to {STATUS_LABEL[next]}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }

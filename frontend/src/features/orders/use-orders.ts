@@ -1,13 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import axios from "axios";
 import { apiClient } from "@/lib/api-client";
 import { ordersKeys } from "./query-keys";
 import type {
   ApiSuccess,
   CreateOrderPayload,
   Order,
+  OrderClosureSummary,
   OrderStatusHistoryEntry,
   PaginatedResult,
   UpdateOrderPayload,
+  UpdateOrderStatusPayload,
 } from "@/types/api";
 import type { OrderStatus } from "@/lib/order-pipeline";
 
@@ -106,21 +109,57 @@ export function useUpdateOrder(orderId: string) {
   });
 }
 
+// Client Flow Part 4B — payload widened from a bare OrderStatus to
+// { newStatus, delayReason?, finalRemarks? } so the -> Closed transition's
+// confirmation dialog can collect the two closure fields at the same
+// moment it collects the confirmation itself (see status-actions.tsx). The
+// backend accepts delayReason/finalRemarks on every transition but only
+// ever persists them when newStatus is 'Closed' — harmless to always
+// include them in the payload shape here too.
 export function useUpdateOrderStatus(orderId: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (newStatus: OrderStatus) => {
-      const res = await apiClient.patch<ApiSuccess<Order>>(`/orders/${orderId}/status`, { newStatus });
+    mutationFn: async (payload: UpdateOrderStatusPayload) => {
+      const res = await apiClient.patch<ApiSuccess<Order>>(`/orders/${orderId}/status`, payload);
       return res.data.data;
     },
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       // Both this order's own views AND the list (so a status badge/stepper
       // change is reflected without a manual refresh) — the history panel
       // gets a new row too, so it needs invalidating right alongside detail.
       queryClient.invalidateQueries({ queryKey: ordersKeys.detail(orderId) });
       queryClient.invalidateQueries({ queryKey: ordersKeys.history(orderId) });
       queryClient.invalidateQueries({ queryKey: ordersKeys.lists() });
+      // Only the -> Closed transition ever creates a closure summary — no
+      // point invalidating this key (and triggering a 404 refetch) on
+      // every other, unrelated transition.
+      if (variables.newStatus === "Closed") {
+        queryClient.invalidateQueries({ queryKey: ordersKeys.closureSummary(orderId) });
+      }
     },
+  });
+}
+
+// GET /api/orders/:orderId/closure-summary (Client Flow Part 4B) — 404s
+// when the order hasn't been closed yet (or, in principle, was closed
+// before this endpoint existed) — resolved to `null` here, same "expected,
+// not an error" convention as useScheduleForOrder/useProductionPlan, so
+// the panel can render a plain "not available" state instead of crashing.
+export function useOrderClosureSummary(orderId: string | undefined) {
+  return useQuery({
+    queryKey: ordersKeys.closureSummary(orderId ?? ""),
+    queryFn: async (): Promise<OrderClosureSummary | null> => {
+      try {
+        const res = await apiClient.get<ApiSuccess<OrderClosureSummary>>(`/orders/${orderId}/closure-summary`);
+        return res.data.data;
+      } catch (err) {
+        if (axios.isAxiosError(err) && err.response?.status === 404) {
+          return null;
+        }
+        throw err;
+      }
+    },
+    enabled: !!orderId,
   });
 }
 

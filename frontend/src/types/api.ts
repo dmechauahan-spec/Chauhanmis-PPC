@@ -207,6 +207,29 @@ export interface OrderStatusHistoryEntry {
   notes: string | null;
 }
 
+// GET /api/orders/:orderId/closure-summary (Client Flow Part 4B) — the raw
+// order_closure_summaries row, returned as-is by
+// orders.service.ts#getOrderClosureSummary (no toOutput conversion), so its
+// Decimal columns arrive as numeric strings — same pattern as OrderSchedule
+// above. Only ever written by the system on the -> Closed transition, never
+// directly by a user.
+export interface OrderClosureSummary {
+  id: number;
+  orderId: string;
+  totalOrderedQty: string;
+  totalProducedQty: string;
+  totalQcPassedQty: string;
+  totalRejectedQty: string;
+  totalReworkQty: string;
+  plannedCompletionDate: string | null;
+  actualCompletionDate: string;
+  // Signed: positive = closed after plannedCompletionDate (late), negative
+  // = closed early, null only when there was no schedule to compare against.
+  delayDays: number | null;
+  delayReason: string | null;
+  finalRemarks: string | null;
+}
+
 export interface CreateOrderPayload {
   orderId: string;
   client: string;
@@ -225,6 +248,17 @@ export interface CreateOrderPayload {
 // similar fields.
 export interface UpdateOrderPayload {
   specialRequirements?: string | null;
+}
+
+// PATCH /api/orders/:orderId/status. delayReason/finalRemarks are accepted
+// on every transition by the backend's schema but only ever persisted when
+// newStatus is specifically 'Closed' (into order_closure_summaries) — sent
+// alongside any other transition they're silently ignored, no error, no
+// effect. See README "Client Flow Part 4" / orders.schema.ts.
+export interface UpdateOrderStatusPayload {
+  newStatus: OrderStatus;
+  delayReason?: string;
+  finalRemarks?: string;
 }
 
 // ---- CTB (Module 6) — GET /api/ctb/order/:orderId ----
@@ -393,6 +427,27 @@ export interface PlanVsActualResult {
   orderId: string;
   days: PlanVsActualDay[];
   summary: PlanVsActualSummary;
+}
+
+// GET /api/production-plan/:orderId/completion-forecast (Client Flow Part
+// 4A) — QC-acceptance-based, deliberately distinct from Module 11's
+// schedule-based (slackDays) At-Risk prediction; a schedule can look On
+// Track while real accepted output quietly falls behind, or vice versa.
+// completionForecast.ts's own computeCompletionForecast returns plain
+// numbers (round2'd in TS, not Prisma Decimal), so these are real numbers,
+// not numeric strings.
+export interface CompletionForecast {
+  orderId: string;
+  balanceQty: number;
+  currentAvgDailyAccepted: number;
+  /** Null only when there's no recent accepted production to project from — see noDataReason. */
+  remainingProductionDays: number | null;
+  expectedCompletionDate: string | null;
+  dueDate: string | null;
+  /** Null when there's no dueDate to compare against, or no forecast could be computed at all. */
+  isDelayedByForecast: boolean | null;
+  windowDaysUsed: number;
+  noDataReason?: string;
 }
 
 // ---- RM Inventory (Module 1 write side) — GET/POST/PATCH /api/rm-inventory ----

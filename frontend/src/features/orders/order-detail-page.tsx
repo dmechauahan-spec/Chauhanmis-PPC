@@ -6,6 +6,8 @@ import { PriorityBadge, OrderStatusBadge } from "./order-badges";
 import { CtbPanel } from "./panels/ctb-panel";
 import { SchedulePanel } from "./panels/schedule-panel";
 import { ProductionPlanPanel } from "./panels/production-plan-panel";
+import { CompletionForecastPanel } from "./panels/completion-forecast-panel";
+import { ClosureSummaryPanel } from "./panels/closure-summary-panel";
 import { QcInspectionsPanel } from "./panels/qc-inspections-panel";
 import { RiskPanel } from "./panels/risk-panel";
 import { StatusHistoryPanel } from "./panels/status-history-panel";
@@ -139,6 +141,23 @@ export function OrderDetailPage() {
       {schedule?.status === "AtRisk" && (
         <div className="mt-5">
           <RiskPanel orderId={order.orderId} />
+        </div>
+      )}
+
+      {/* Placed right next to Risk (above, when shown) — same schedule-vs-
+          forecast neighborhood, deliberately two separate cards rather
+          than merged, since they're two different signals (schedule-based
+          vs. QC-acceptance-based) that shouldn't blur together. Shown
+          unconditionally (unlike Risk), since a forecast is always
+          computable — or explains why it isn't — regardless of the
+          order's Risk status. */}
+      <div className="mt-5">
+        <CompletionForecastPanel orderId={order.orderId} />
+      </div>
+
+      {order.status === "Closed" && (
+        <div className="mt-5">
+          <ClosureSummaryPanel orderId={order.orderId} />
         </div>
       )}
 

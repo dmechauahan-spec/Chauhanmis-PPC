@@ -9,6 +9,8 @@ export const ordersKeys = {
   details: () => [...ordersKeys.all, "detail"] as const,
   detail: (orderId: string) => [...ordersKeys.details(), orderId] as const,
   history: (orderId: string) => [...ordersKeys.all, "history", orderId] as const,
+  // Client Flow Part 4B.
+  closureSummary: (orderId: string) => [...ordersKeys.all, "closure-summary", orderId] as const,
 };
 
 export const ctbKeys = {
@@ -38,6 +40,8 @@ export const riskKeys = {
 export const productionPlanKeys = {
   plan: (orderId: string) => ["productionPlan", "plan", orderId] as const,
   planVsActual: (orderId: string) => ["productionPlan", "plan-vs-actual", orderId] as const,
+  // Client Flow Part 4A.
+  completionForecast: (orderId: string) => ["productionPlan", "completion-forecast", orderId] as const,
 };
 
 export const productsKeys = {
