@@ -141,6 +141,22 @@ enum FgDispatchStatus {
   Dispatched
 }
 
+// FG Module Part 2 — the audit ledger's own event vocabulary. Reserved/
+// Unreserved/Dispatched aren't written by anything in Part 2 itself (Parts
+// 3-4 build reservation/dispatch) — listed here now so the enum is
+// complete/stable from the start rather than migrated twice. See README
+// "FG Module Part 2".
+enum FgMovementType {
+  BatchCreated
+  WarehouseTransfer
+  Reserved
+  Unreserved
+  Dispatched
+  Held
+  HoldReleased
+  Adjustment
+}
+
 // ============================================================================
 // 1. MODEL MASTER
 // ============================================================================
@@ -790,12 +806,41 @@ model FgBatch {
 
   order        Order             @relation(fields: [productionOrderId], references: [orderId])
   qcInspection DailyQcInspection @relation(fields: [qcInspectionId], references: [id])
+  movements    FgStockMovement[]
 
   @@index([productionOrderId])
   @@index([warehouseId])
   @@index([stockStatus])
   @@index([dispatchStatus])
   @@map("fg_batches")
+}
+
+// FG Module Part 2 — the audit ledger: "Every stock movement ka date, user,
+// quantity aur source/destination record ho" (the client's own spec,
+// quoted in README "FG Module Part 2"). Every write in this whole module
+// (this part's WarehouseTransfer/Held/HoldReleased, Part 1's own
+// BatchCreated retrofitted in alongside it, and Parts 3-4's future
+// Reserved/Unreserved/Dispatched) goes through the one shared
+// `logFgMovement` in fgStockMovement.service.ts — never a hand-rolled
+// insert per action. `quantity`/`fromLocation`/`toLocation` are all
+// nullable because not every movement type involves a quantity (Held/
+// HoldReleased don't) or a location change (Reserved/Unreserved/Dispatched
+// don't move the batch physically).
+model FgStockMovement {
+  id           BigInt         @id @default(autoincrement())
+  fgBatchId    BigInt         @map("fg_batch_id")
+  movementType FgMovementType @map("movement_type")
+  quantity     Decimal?       @db.Decimal(12, 2)
+  fromLocation String?        @map("from_location")
+  toLocation   String?        @map("to_location")
+  performedBy  String         @map("performed_by")
+  notes        String?
+  createdAt    DateTime       @default(now()) @map("created_at")
+
+  fgBatch FgBatch @relation(fields: [fgBatchId], references: [id], onDelete: Cascade)
+
+  @@index([fgBatchId])
+  @@map("fg_stock_movements")
 }
 
 // ============================================================================

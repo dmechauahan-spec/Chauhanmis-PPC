@@ -1,7 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
 import { sendSuccess } from '../../utils/apiResponse';
 import * as fgBatchService from './fgBatch.service';
-import { ListFgBatchesQuery } from './fgBatch.schema';
+import * as fgStockMovementService from './fgStockMovement.service';
+import { ListFgBatchesQuery, ListFgMovementsQuery } from './fgBatch.schema';
 
 export async function generate(req: Request, res: Response, next: NextFunction) {
   try {
@@ -30,6 +31,45 @@ export async function getByNo(req: Request, res: Response, next: NextFunction) {
   try {
     const batch = await fgBatchService.getFgBatchByNo(req.params.fgBatchNo);
     sendSuccess(res, batch);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function transfer(req: Request, res: Response, next: NextFunction) {
+  try {
+    const batch = await fgBatchService.transferFgBatch(req.params.fgBatchNo, req.body, req.user!.name);
+    sendSuccess(res, batch);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function hold(req: Request, res: Response, next: NextFunction) {
+  try {
+    const batch = await fgBatchService.holdFgBatch(req.params.fgBatchNo, req.body, req.user!.name);
+    sendSuccess(res, batch);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function releaseHold(req: Request, res: Response, next: NextFunction) {
+  try {
+    const batch = await fgBatchService.releaseHoldFgBatch(req.params.fgBatchNo, req.body, req.user!.name);
+    sendSuccess(res, batch);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listMovements(req: Request, res: Response, next: NextFunction) {
+  try {
+    const result = await fgStockMovementService.listFgMovements(
+      req.params.fgBatchNo,
+      req.query as unknown as ListFgMovementsQuery,
+    );
+    sendSuccess(res, result);
   } catch (err) {
     next(err);
   }

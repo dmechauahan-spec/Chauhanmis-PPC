@@ -12,10 +12,17 @@ const testModelId = 'TEST-MDL-FGBATCH-001';
 const testSku = 'TEST-SKU-FGBATCH-001';
 const testOrderId = 'TEST-SO-FGBATCH-001';
 const testWarehouseId = 'TEST-WH-FGBATCH-001';
+const secondWarehouseId = 'TEST-WH-FGBATCH-002';
 
 const DAY0 = '2031-06-01';
 
-let writeHeader: { Authorization: string }; // ProductionManager
+let writeHeader: { Authorization: string }; // ProductionManager — fgBatch.write (generate)
+// FG Module Part 2's transfer/hold/release-hold/movements use a DIFFERENT
+// permission (fgStockMovements: StoreManager write) — this same StoreManager
+// header doubles as both "read everything" (fgBatch.read) AND "write the
+// Part 2 actions" (fgStockMovements.write) for that reason; writeHeader
+// (ProductionManager) is what gets used to assert those new actions are
+// correctly 403'd for the wrong role.
 let readOnlyHeader: { Authorization: string }; // StoreManager
 
 let passingInspectionId: bigint;
@@ -48,6 +55,9 @@ beforeAll(async () => {
 
   await prisma.warehouse.create({
     data: { warehouseId: testWarehouseId, warehouseName: 'FG Batch Test Warehouse' },
+  });
+  await prisma.warehouse.create({
+    data: { warehouseId: secondWarehouseId, warehouseName: 'FG Batch Test Warehouse 2' },
   });
 
   const passing = await prisma.dailyQcInspection.create({
@@ -94,13 +104,43 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // fg_stock_movements cascades (onDelete: Cascade on FgStockMovement.fgBatch)
+  // — no separate cleanup needed, same reliance rmInventory.test.ts's own
+  // "deletes the part (cascades its transactions)" test documents.
   await prisma.fgBatch.deleteMany({ where: { productionOrderId: testOrderId } });
   await prisma.dailyQcInspection.deleteMany({ where: { orderId: testOrderId } });
   await prisma.order.deleteMany({ where: { orderId: testOrderId } });
-  await prisma.warehouse.deleteMany({ where: { warehouseId: testWarehouseId } });
+  await prisma.warehouse.deleteMany({ where: { warehouseId: { in: [testWarehouseId, secondWarehouseId] } } });
   await prisma.product.deleteMany({ where: { modelId: testModelId } });
   await prisma.$disconnect();
 });
+
+// Creates a fresh Passed inspection and immediately converts it to an FG
+// batch via the real generate endpoint — a small helper so the Part 2
+// action tests below (transfer/hold/movements) each get their own
+// independent batch, rather than mutating one of Part 1's own fixture
+// batches out from under its already-asserted state.
+let dateCounter = 3;
+async function createTestFgBatch(qty = 10): Promise<string> {
+  dateCounter += 1;
+  const inspection = await prisma.dailyQcInspection.create({
+    data: {
+      orderId: testOrderId,
+      inspectionDate: new Date(`2031-06-${String(dateCounter).padStart(2, '0')}`),
+      producedQty: qty,
+      passedQty: qty,
+      rejectedQty: 0,
+      reworkQty: 0,
+      qcStatus: QcInspectionStatus.Passed,
+      inspectorName: 'FG Batch Test Inspector',
+    },
+  });
+  const res = await request(app)
+    .post('/api/fg-batches/generate')
+    .set(writeHeader)
+    .send({ qcInspectionId: inspection.id.toString() });
+  return res.body.data.fgBatchNo as string;
+}
 
 describe('POST /api/fg-batches/generate', () => {
   it('generates an FG batch, defaulting fields from the order/product and computing availableQty', async () => {
@@ -284,5 +324,190 @@ describe('GET /api/fg-batches/:fgBatchNo', () => {
   it('returns 404 for an unknown fgBatchNo', async () => {
     const res = await request(app).get('/api/fg-batches/DOES-NOT-EXIST').set(readOnlyHeader);
     expect(res.status).toBe(404);
+  });
+});
+
+describe('POST /api/fg-batches/:fgBatchNo/transfer', () => {
+  it('transfers to a new warehouse/bin, capturing from/to, readable via the movements ledger', async () => {
+    const fgBatchNo = await createTestFgBatch();
+
+    const res = await request(app)
+      .post(`/api/fg-batches/${fgBatchNo}/transfer`)
+      .set(readOnlyHeader) // StoreManager -- fgStockMovements.write
+      .send({ warehouseId: testWarehouseId, rackBinLocation: 'Rack 1 Bin A', notes: 'Initial putaway' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.warehouseId).toBe(testWarehouseId);
+    expect(res.body.data.rackBinLocation).toBe('Rack 1 Bin A');
+
+    const moves = await request(app).get(`/api/fg-batches/${fgBatchNo}/movements`).set(readOnlyHeader);
+    const transferMove = moves.body.data.items.find((m: { movementType: string }) => m.movementType === 'WarehouseTransfer');
+    expect(transferMove).toBeTruthy();
+    expect(transferMove.fromLocation).toBe('Unassigned');
+    expect(transferMove.toLocation).toBe(`${testWarehouseId} / Rack 1 Bin A`);
+    expect(transferMove.performedBy).toBeTruthy();
+  });
+
+  it('transferring again captures the previous location as fromLocation', async () => {
+    const fgBatchNo = await createTestFgBatch();
+    await request(app)
+      .post(`/api/fg-batches/${fgBatchNo}/transfer`)
+      .set(readOnlyHeader)
+      .send({ warehouseId: testWarehouseId, rackBinLocation: 'Rack 1 Bin A' });
+
+    const res = await request(app)
+      .post(`/api/fg-batches/${fgBatchNo}/transfer`)
+      .set(readOnlyHeader)
+      .send({ warehouseId: secondWarehouseId });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.warehouseId).toBe(secondWarehouseId);
+    // rackBinLocation omitted on this second transfer -- cleared, not carried over.
+    expect(res.body.data.rackBinLocation).toBeNull();
+
+    const moves = await request(app).get(`/api/fg-batches/${fgBatchNo}/movements`).set(readOnlyHeader);
+    const transfers = moves.body.data.items.filter((m: { movementType: string }) => m.movementType === 'WarehouseTransfer');
+    expect(transfers).toHaveLength(2);
+    expect(transfers[1].fromLocation).toBe(`${testWarehouseId} / Rack 1 Bin A`);
+    expect(transfers[1].toLocation).toBe(secondWarehouseId);
+  });
+
+  it('rejects an unknown warehouseId', async () => {
+    const fgBatchNo = await createTestFgBatch();
+    const res = await request(app)
+      .post(`/api/fg-batches/${fgBatchNo}/transfer`)
+      .set(readOnlyHeader)
+      .send({ warehouseId: 'DOES-NOT-EXIST' });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects transferring a fully Dispatched batch', async () => {
+    const fgBatchNo = await createTestFgBatch();
+    // Part 4 (dispatch) does not exist yet -- simulate the end state
+    // directly to test this part's own guard against it.
+    await prisma.fgBatch.update({ where: { fgBatchNo }, data: { dispatchStatus: 'Dispatched' } });
+
+    const res = await request(app)
+      .post(`/api/fg-batches/${fgBatchNo}/transfer`)
+      .set(readOnlyHeader)
+      .send({ warehouseId: testWarehouseId });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error.message).toMatch(/fully dispatched/);
+  });
+
+  it('rejects a ProductionManager (not Admin/StoreManager) with 403', async () => {
+    const fgBatchNo = await createTestFgBatch();
+    const res = await request(app)
+      .post(`/api/fg-batches/${fgBatchNo}/transfer`)
+      .set(writeHeader)
+      .send({ warehouseId: testWarehouseId });
+    expect(res.status).toBe(403);
+  });
+
+  it('returns 404 for an unknown fgBatchNo', async () => {
+    const res = await request(app)
+      .post('/api/fg-batches/DOES-NOT-EXIST/transfer')
+      .set(readOnlyHeader)
+      .send({ warehouseId: testWarehouseId });
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('PATCH /api/fg-batches/:fgBatchNo/hold and /release-hold', () => {
+  it('holds a batch, logging a Held movement, then rejects holding it again', async () => {
+    const fgBatchNo = await createTestFgBatch();
+
+    const res = await request(app)
+      .patch(`/api/fg-batches/${fgBatchNo}/hold`)
+      .set(readOnlyHeader)
+      .send({ notes: 'Suspected moisture damage' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.stockStatus).toBe('Hold');
+
+    const again = await request(app).patch(`/api/fg-batches/${fgBatchNo}/hold`).set(readOnlyHeader).send({});
+    expect(again.status).toBe(409);
+    expect(again.body.error.message).toMatch(/already on Hold/);
+
+    const moves = await request(app).get(`/api/fg-batches/${fgBatchNo}/movements`).set(readOnlyHeader);
+    const heldMove = moves.body.data.items.find((m: { movementType: string }) => m.movementType === 'Held');
+    expect(heldMove.notes).toBe('Suspected moisture damage');
+  });
+
+  it('releases a hold back to Available when reservedQty is 0', async () => {
+    const fgBatchNo = await createTestFgBatch();
+    await request(app).patch(`/api/fg-batches/${fgBatchNo}/hold`).set(readOnlyHeader).send({});
+
+    const res = await request(app).patch(`/api/fg-batches/${fgBatchNo}/release-hold`).set(readOnlyHeader).send({});
+    expect(res.status).toBe(200);
+    expect(res.body.data.stockStatus).toBe('Available');
+
+    const moves = await request(app).get(`/api/fg-batches/${fgBatchNo}/movements`).set(readOnlyHeader);
+    expect(moves.body.data.items.some((m: { movementType: string }) => m.movementType === 'HoldReleased')).toBe(true);
+  });
+
+  it('releases a hold back to Reserved when reservedQty is nonzero (recomputed, not defaulted)', async () => {
+    const fgBatchNo = await createTestFgBatch();
+    // Part 3 (reservation) does not exist yet -- simulate a pre-existing
+    // reservation directly to test this part's own recompute-on-release logic.
+    await prisma.fgBatch.update({ where: { fgBatchNo }, data: { reservedQty: 4 } });
+    await request(app).patch(`/api/fg-batches/${fgBatchNo}/hold`).set(readOnlyHeader).send({});
+
+    const res = await request(app).patch(`/api/fg-batches/${fgBatchNo}/release-hold`).set(readOnlyHeader).send({});
+    expect(res.status).toBe(200);
+    expect(res.body.data.stockStatus).toBe('Reserved');
+  });
+
+  it('rejects releasing a batch that is not on Hold', async () => {
+    const fgBatchNo = await createTestFgBatch();
+    const res = await request(app).patch(`/api/fg-batches/${fgBatchNo}/release-hold`).set(readOnlyHeader).send({});
+    expect(res.status).toBe(409);
+    expect(res.body.error.message).toMatch(/not currently on Hold/);
+  });
+
+  it('rejects a ProductionManager (not Admin/StoreManager) with 403 on both actions', async () => {
+    const fgBatchNo = await createTestFgBatch();
+    const holdRes = await request(app).patch(`/api/fg-batches/${fgBatchNo}/hold`).set(writeHeader).send({});
+    expect(holdRes.status).toBe(403);
+
+    await request(app).patch(`/api/fg-batches/${fgBatchNo}/hold`).set(readOnlyHeader).send({});
+    const releaseRes = await request(app).patch(`/api/fg-batches/${fgBatchNo}/release-hold`).set(writeHeader).send({});
+    expect(releaseRes.status).toBe(403);
+  });
+});
+
+describe('GET /api/fg-batches/:fgBatchNo/movements', () => {
+  it('returns the full ledger in chronological order, starting with BatchCreated', async () => {
+    const fgBatchNo = await createTestFgBatch(25);
+    await request(app)
+      .post(`/api/fg-batches/${fgBatchNo}/transfer`)
+      .set(readOnlyHeader)
+      .send({ warehouseId: testWarehouseId, rackBinLocation: 'Rack 5' });
+    await request(app).patch(`/api/fg-batches/${fgBatchNo}/hold`).set(readOnlyHeader).send({ notes: 'QA re-check' });
+    await request(app).patch(`/api/fg-batches/${fgBatchNo}/release-hold`).set(readOnlyHeader).send({});
+
+    const res = await request(app).get(`/api/fg-batches/${fgBatchNo}/movements`).set(readOnlyHeader);
+    expect(res.status).toBe(200);
+    const types = res.body.data.items.map((m: { movementType: string }) => m.movementType);
+    expect(types).toEqual(['BatchCreated', 'WarehouseTransfer', 'Held', 'HoldReleased']);
+
+    const created = res.body.data.items[0];
+    expect(created.fromLocation).toBeNull();
+    expect(created.toLocation).toBe('Unassigned');
+    expect(Number(created.quantity)).toBe(25);
+    expect(created.performedBy).toBeTruthy();
+    expect(res.body.data.total).toBe(4);
+  });
+
+  it('returns 404 for an unknown fgBatchNo', async () => {
+    const res = await request(app).get('/api/fg-batches/DOES-NOT-EXIST/movements').set(readOnlyHeader);
+    expect(res.status).toBe(404);
+  });
+
+  it('is readable by ProductionManager (read-only, not the write-restricted role)', async () => {
+    const fgBatchNo = await createTestFgBatch();
+    const res = await request(app).get(`/api/fg-batches/${fgBatchNo}/movements`).set(writeHeader);
+    expect(res.status).toBe(200);
   });
 });

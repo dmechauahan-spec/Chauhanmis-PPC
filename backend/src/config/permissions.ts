@@ -56,4 +56,9 @@ export const PERMISSIONS = {
   // (inventory/warehouse) territory instead and will get their own entries
   // here when built — not this one.
   fgBatch: { read: STORE_AND_PRODUCTION, write: PRODUCTION_ONLY },
+  // FG Module Part 2 — this IS one of the "warehouse/bin assignment...
+  // actions" the fgBatch comment above points to: transfer, hold,
+  // release-hold, and reading the movement ledger. StoreManager write, all
+  // roles read — see README "FG Module Part 2".
+  fgStockMovements: { read: STORE_AND_PRODUCTION, write: STORE_ONLY },
 } as const;

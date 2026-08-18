@@ -47,5 +47,32 @@ export const listFgBatchesQuerySchema = paginationQuerySchema.extend({
   dispatchStatus: fgDispatchStatusEnum.optional(),
 });
 
+// FG Module Part 2 — POST /api/fg-batches/:fgBatchNo/transfer. warehouseId
+// is required (a transfer always names a real destination); rackBinLocation
+// is optional and, if omitted, clears the batch's existing bin rather than
+// carrying it over — a bin label from the old warehouse almost certainly
+// doesn't mean anything in the new one. See fgBatch.service.ts.
+export const transferFgBatchSchema = z.object({
+  warehouseId: z.string().min(1, 'warehouseId is required'),
+  rackBinLocation: z.string().min(1).optional(),
+  notes: z.string().optional(),
+});
+
+// hold/release-hold both take an entirely optional body — `notes` doubles
+// as the hold reason on hold, and as a release note on release.
+export const holdFgBatchSchema = z.object({
+  notes: z.string().optional(),
+});
+
+export const releaseHoldFgBatchSchema = z.object({
+  notes: z.string().optional(),
+});
+
+export const listFgMovementsQuerySchema = paginationQuerySchema;
+
 export type GenerateFgBatchInput = z.infer<typeof generateFgBatchSchema>;
 export type ListFgBatchesQuery = z.infer<typeof listFgBatchesQuerySchema>;
+export type TransferFgBatchInput = z.infer<typeof transferFgBatchSchema>;
+export type HoldFgBatchInput = z.infer<typeof holdFgBatchSchema>;
+export type ReleaseHoldFgBatchInput = z.infer<typeof releaseHoldFgBatchSchema>;
+export type ListFgMovementsQuery = z.infer<typeof listFgMovementsQuerySchema>;

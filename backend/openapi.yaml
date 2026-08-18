@@ -1317,6 +1317,27 @@ components:
             inspectorName: { type: string }
             qcStatus: { type: string }
 
+    FgStockMovement:
+      type: object
+      readOnly: true
+      description: >
+        FG Module Part 2. One row per audit-ledger event — see README "FG Module Part 2". Written
+        ONLY via the shared logFgMovement (fgStockMovement.service.ts), inside the same transaction
+        as the state change it documents. Never edited; only cascade-deleted with its parent batch.
+      properties:
+        id: { type: integer }
+        fgBatchId: { type: integer }
+        movementType:
+          type: string
+          enum: [BatchCreated, WarehouseTransfer, Reserved, Unreserved, Dispatched, Held, HoldReleased, Adjustment]
+          description: This part writes BatchCreated/WarehouseTransfer/Held/HoldReleased. Reserved/Unreserved/Dispatched are Parts 3-4's; Adjustment is reserved for a future manual-correction path.
+        quantity: { type: number, nullable: true, description: 'Null for movement types that do not involve a quantity (Held/HoldReleased).' }
+        fromLocation: { type: string, nullable: true, example: 'WH-01 / Rack 3 Bin B', description: 'Human-readable point-in-time snapshot (see formatFgLocation), not a live warehouse lookup.' }
+        toLocation: { type: string, nullable: true, example: WH-02 }
+        performedBy: { type: string, description: The authenticated caller's name — never client-supplied. }
+        notes: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+
 paths:
   /auth/login:
     post:
@@ -3500,4 +3521,123 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/FgBatch' }
+        '404': { description: Not found }
+
+  /fg-batches/{fgBatchNo}/transfer:
+    parameters:
+      - name: fgBatchNo
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [FG Batches]
+      summary: Warehouse/bin transfer
+      description: >
+        FG Module Part 2. Logs a WarehouseTransfer movement (fromLocation/toLocation both
+        formatted via formatFgLocation) in the same transaction as the warehouseId/rackBinLocation
+        update. rackBinLocation omitted clears the existing bin rather than carrying it over.
+        Requires Admin/StoreManager — see README "FG Module Part 2" for the role split.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [warehouseId]
+              properties:
+                warehouseId: { type: string }
+                rackBinLocation: { type: string }
+                notes: { type: string }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FgBatch' }
+        '400': { description: Unknown warehouseId }
+        '404': { description: Not found }
+        '409': { description: The batch has already been fully Dispatched }
+
+  /fg-batches/{fgBatchNo}/hold:
+    parameters:
+      - name: fgBatchNo
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [FG Batches]
+      description: >
+        FG Module Part 2. Sets stockStatus=Hold and logs a Held movement (notes doubles as the
+        hold reason). A Hold batch must not be reservable/dispatchable — enforced by Parts 3-4,
+        not here (see README "FG Module Part 2").
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes: { type: string, description: Optional hold reason. }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FgBatch' }
+        '404': { description: Not found }
+        '409': { description: Already on Hold }
+
+  /fg-batches/{fgBatchNo}/release-hold:
+    parameters:
+      - name: fgBatchNo
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [FG Batches]
+      description: >
+        FG Module Part 2. Restores stockStatus to Reserved (if reservedQty > 0) or Available
+        (otherwise) — recomputed, never defaulted — and logs a HoldReleased movement.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                notes: { type: string }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FgBatch' }
+        '404': { description: Not found }
+        '409': { description: Not currently on Hold }
+
+  /fg-batches/{fgBatchNo}/movements:
+    parameters:
+      - name: fgBatchNo
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [FG Batches]
+      summary: The audit ledger for one batch
+      description: FG Module Part 2. Oldest first — a true chronological history. Always starts with BatchCreated.
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+      responses:
+        '200':
+          description: Paginated list of FgStockMovement, chronological
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/FgStockMovement' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pageSize: { type: integer }
         '404': { description: Not found }

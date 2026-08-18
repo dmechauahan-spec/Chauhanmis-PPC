@@ -1,4 +1,4 @@
-import { FgQcStatus, Prisma } from '@prisma/client';
+import { FgDispatchStatus, FgMovementType, FgQcStatus, FgStockStatus, Prisma } from '@prisma/client';
 import { prisma } from '../../db/client';
 import { NotFoundError, ValidationError, BusinessRuleError } from '../../utils/errors';
 import { buildPaginated, PaginatedResult } from '../../utils/apiResponse';
@@ -6,7 +6,14 @@ import { toSkipTake } from '../../utils/pagination';
 import { round2 } from '../scheduling/schedulingEngine';
 import { buildDateSequencePrefix, generateWithRetry, isUniqueConstraintConflict, nextSequentialId } from '../../utils/sequentialIdGenerator';
 import { getQcInspectionById } from '../qcInspection/qcInspection.service';
-import { GenerateFgBatchInput, ListFgBatchesQuery } from './fgBatch.schema';
+import { formatFgLocation, logFgMovement } from './fgStockMovement.service';
+import {
+  GenerateFgBatchInput,
+  HoldFgBatchInput,
+  ListFgBatchesQuery,
+  ReleaseHoldFgBatchInput,
+  TransferFgBatchInput,
+} from './fgBatch.schema';
 
 // FG Module Part 1 — see README "FG Module Part 1" for the full design
 // rationale (the availableQty-always-computed decision, the QC-Inspection-
@@ -239,14 +246,13 @@ export async function generateFgBatch(input: GenerateFgBatchInput, createdBy: st
     () => nextFgBatchNo(productionDate),
     async (fgBatchNo) => {
       try {
-        // Create in a transaction — currently a single insert, but kept as
-        // a transaction (not a bare create) so Part 2's initial
-        // BatchCreated movement-ledger entry can be added inside the same
-        // atomic unit without restructuring this function. That initial
-        // movement log itself is deferred to Part 2 (which defines the
-        // ledger table) — see README "FG Module Part 1".
-        return await prisma.$transaction((tx) =>
-          tx.fgBatch.create({
+        // Create in a transaction so the initial BatchCreated movement-
+        // ledger entry (FG Module Part 2) is written atomically alongside
+        // the row itself — every batch's history starts with this entry,
+        // no exceptions, via the same logFgMovement every other action in
+        // this module uses.
+        return await prisma.$transaction(async (tx) => {
+          const createdRow = await tx.fgBatch.create({
             data: {
               fgBatchNo,
               productionOrderId: inspection.orderId,
@@ -277,8 +283,19 @@ export async function generateFgBatch(input: GenerateFgBatchInput, createdBy: st
               rackBinLocation: input.rackBinLocation,
               createdBy,
             },
-          }),
-        );
+          });
+
+          await logFgMovement(tx, {
+            fgBatchId: createdRow.id,
+            movementType: FgMovementType.BatchCreated,
+            quantity: createdRow.qcPassedQty,
+            fromLocation: null,
+            toLocation: formatFgLocation(createdRow.warehouseId, createdRow.rackBinLocation),
+            performedBy: createdBy,
+          });
+
+          return createdRow;
+        });
       } catch (err) {
         if (isQcInspectionIdConflict(err)) {
           throw new BusinessRuleError(
@@ -319,4 +336,127 @@ export async function getFgBatchByNo(fgBatchNo: string): Promise<FgBatchDetailOu
     throw new NotFoundError('FG batch', fgBatchNo);
   }
   return toDetailOutput(row);
+}
+
+async function getBareFgBatchOrThrow(fgBatchNo: string): Promise<FgBatchBare> {
+  const batch = await prisma.fgBatch.findUnique({ where: { fgBatchNo } });
+  if (!batch) {
+    throw new NotFoundError('FG batch', fgBatchNo);
+  }
+  return batch;
+}
+
+// FG Module Part 2 — POST /api/fg-batches/:fgBatchNo/transfer. A Dispatched
+// batch has physically left the warehouse — transferring it doesn't mean
+// anything, so it's the one dispatchStatus this rejects; Available/
+// Reserved/Hold/Partial can all still move. rackBinLocation omitted
+// clears the existing bin (see fgBatch.schema.ts's own comment on why) —
+// warehouseId omitted is not possible, it's required.
+export async function transferFgBatch(
+  fgBatchNo: string,
+  input: TransferFgBatchInput,
+  performedBy: string,
+): Promise<FgBatchOutput> {
+  const batch = await getBareFgBatchOrThrow(fgBatchNo);
+
+  if (batch.dispatchStatus === FgDispatchStatus.Dispatched) {
+    throw new BusinessRuleError(
+      `FG batch '${fgBatchNo}' has already been fully dispatched and can no longer be transferred.`,
+      { fgBatchNo, dispatchStatus: batch.dispatchStatus },
+    );
+  }
+
+  await getWarehouseOrThrow(input.warehouseId);
+
+  const fromLocation = formatFgLocation(batch.warehouseId, batch.rackBinLocation);
+  const toLocation = formatFgLocation(input.warehouseId, input.rackBinLocation ?? null);
+  const nextRackBinLocation = input.rackBinLocation ?? null;
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const result = await tx.fgBatch.update({
+      where: { id: batch.id },
+      data: { warehouseId: input.warehouseId, rackBinLocation: nextRackBinLocation },
+    });
+    await logFgMovement(tx, {
+      fgBatchId: batch.id,
+      movementType: FgMovementType.WarehouseTransfer,
+      fromLocation,
+      toLocation,
+      performedBy,
+      notes: input.notes,
+    });
+    return result;
+  });
+
+  return toOutput(updated);
+}
+
+// FG Module Part 2 — PATCH /api/fg-batches/:fgBatchNo/hold. Rejects an
+// already-Hold batch explicitly rather than silently no-op'ing — a caller
+// asking to hold a batch that's already held almost certainly has a stale
+// view of its state, and a clear error surfaces that instead of masking it.
+//
+// IMPORTANT for Parts 3-4: a Hold batch must NOT be reservable or
+// dispatchable. This part only sets the flag and logs it — it does not (and
+// cannot yet) enforce that rule anywhere else, since reservation/dispatch
+// don't exist yet. Parts 3-4 MUST check `stockStatus !== 'Hold'` themselves
+// before reserving/dispatching — see README "FG Module Part 2".
+export async function holdFgBatch(fgBatchNo: string, input: HoldFgBatchInput, performedBy: string): Promise<FgBatchOutput> {
+  const batch = await getBareFgBatchOrThrow(fgBatchNo);
+
+  if (batch.stockStatus === FgStockStatus.Hold) {
+    throw new BusinessRuleError(`FG batch '${fgBatchNo}' is already on Hold.`, { fgBatchNo });
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const result = await tx.fgBatch.update({ where: { id: batch.id }, data: { stockStatus: FgStockStatus.Hold } });
+    await logFgMovement(tx, {
+      fgBatchId: batch.id,
+      movementType: FgMovementType.Held,
+      performedBy,
+      notes: input.notes,
+    });
+    return result;
+  });
+
+  return toOutput(updated);
+}
+
+// FG Module Part 2 — PATCH /api/fg-batches/:fgBatchNo/release-hold. Rejects
+// releasing a batch that isn't currently on Hold, same "clear error, not a
+// silent no-op" reasoning as hold above. Recomputes the correct post-
+// release stockStatus from reservedQty rather than always defaulting to
+// Available — a batch that already had a nonzero reservation before it was
+// held returns to Reserved once released, not back to a falsely-available
+// state (reservedQty itself is only ever set by Part 3's future
+// reservation actions; this just restores the status that quantity already
+// implies).
+export async function releaseHoldFgBatch(
+  fgBatchNo: string,
+  input: ReleaseHoldFgBatchInput,
+  performedBy: string,
+): Promise<FgBatchOutput> {
+  const batch = await getBareFgBatchOrThrow(fgBatchNo);
+
+  if (batch.stockStatus !== FgStockStatus.Hold) {
+    throw new BusinessRuleError(`FG batch '${fgBatchNo}' is not currently on Hold.`, {
+      fgBatchNo,
+      stockStatus: batch.stockStatus,
+    });
+  }
+
+  const nextStatus = Number(batch.reservedQty) > 0 ? FgStockStatus.Reserved : FgStockStatus.Available;
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const result = await tx.fgBatch.update({ where: { id: batch.id }, data: { stockStatus: nextStatus } });
+    await logFgMovement(tx, {
+      fgBatchId: batch.id,
+      movementType: FgMovementType.HoldReleased,
+      performedBy,
+      notes: input.notes,
+    });
+    return result;
+  });
+
+  return toOutput(updated);
 }

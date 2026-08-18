@@ -160,6 +160,7 @@ search, and the other side's data included) — the split only applies to **writ
 | Dashboard | StoreManager, ProductionManager | Admin only | Read-only module. |
 | Warehouses | StoreManager, ProductionManager | Admin only | Master data, same reasoning as Lines/Products — see README "FG Module Part 1". |
 | FG Batch | StoreManager, ProductionManager | ProductionManager | FG batch *creation* only (`POST /generate`) — a continuation of QC, not a warehouse action. Later FG-module parts' warehouse/reservation/dispatch actions are StoreManager territory instead and will get their own row when built — see README "FG Module Part 1" for the full judgment call. |
+| FG Stock Movements | StoreManager, ProductionManager | **StoreManager** | Transfer, hold, release-hold, and the movements ledger — the warehouse-side actions Part 1's `fgBatch` row above points forward to. See README "FG Module Part 2". |
 
 "Admin only" write rows have no route in that module reachable by `StoreManager`/`ProductionManager`
 at all — `Admin` passing every check is what makes those routes reachable, not a third explicit
@@ -2056,6 +2057,89 @@ QC inspection's basic info inlined (`order`/`qcInspectionSummary`, a small hand-
 each — see `fgBatch.service.ts`'s `includeLinked`), so the most commonly-needed context doesn't
 cost a second round trip; not a substitute for `GET /api/orders/:orderId` or
 `GET /api/qc-inspections/:id` themselves.
+
+### FG Module Part 2 — Stock Movement Ledger + Transfer/Hold
+
+Builds the audit ledger the client's spec asks for, quoted directly:
+
+> *"Every stock movement ka date, user, quantity aur source/destination record ho."*
+
+...plus the two actions that write to it in this pass: warehouse/bin transfer, and putting a batch
+on/off Hold. Reservation and Dispatch (Parts 3–4) will also write to this same ledger — it's built
+generically enough now to serve all of them without changing shape later.
+
+**`fg_stock_movements` — one row per event, never edited or deleted (only `onDelete: Cascade` from
+its parent batch).** `movementType` (`BatchCreated` / `WarehouseTransfer` / `Reserved` /
+`Unreserved` / `Dispatched` / `Held` / `HoldReleased` / `Adjustment`) — the full vocabulary is
+declared now even though this part only ever writes four of the eight values (`BatchCreated`,
+`WarehouseTransfer`, `Held`, `HoldReleased`); `Reserved`/`Unreserved`/`Dispatched` are Parts 3–4's
+to write, and `Adjustment` is reserved for a future manual-correction path this part doesn't build.
+`quantity`/`fromLocation`/`toLocation` are all nullable because not every movement type involves
+either — Held/HoldReleased don't touch quantity or location at all; Reserved/Unreserved/Dispatched
+(when built) won't touch location.
+
+**The reusable logging design — read this before adding a new movement-writing action anywhere in
+this module.** `fgStockMovement.service.ts`'s `logFgMovement(tx, {...})` is the **only** place that
+ever calls `tx.fgStockMovement.create(...)` — every write action in the whole FG module, this part
+and future ones alike, calls it rather than hand-rolling its own insert:
+
+- It always takes a **transaction client**, never the bare `prisma` singleton — the movement log is
+  written atomically alongside the state change it documents, in the same `prisma.$transaction` as
+  the `fgBatch.update`/`fgBatch.create` it's paired with. There is no code path in this module where
+  a batch's state changes without a corresponding ledger row, or vice versa.
+- `formatFgLocation(warehouseId, rackBinLocation)` — a small shared helper alongside it — renders a
+  human-readable `"WH-01 / Rack 3 Bin B"` (or just `"WH-01"` with no bin, or `"Unassigned"` with no
+  warehouse at all) for `fromLocation`/`toLocation`. Deliberately a point-in-time string snapshot,
+  not a live foreign-key lookup — a movement row should still read correctly years later even if the
+  `Warehouse` record it refers to is later renamed or deleted.
+- **Part 1's `BatchCreated` entry, retrofitted in this part** (it was explicitly deferred in Part 1
+  — see that section above — specifically until this table existed): `generateFgBatch`'s existing
+  transaction now also calls `logFgMovement` with `fromLocation: null`, `toLocation:` the batch's
+  initial location, `quantity:` the batch's starting `qcPassedQty`. Every batch's history starts
+  with this entry, no exceptions — `fgBatch.test.ts`'s movements-ledger test asserts it's always
+  first.
+
+**`POST /api/fg-batches/:fgBatchNo/transfer`.** Updates `warehouseId`/`rackBinLocation` and logs a
+`WarehouseTransfer` movement, `fromLocation` := the batch's location *before* the update,
+`toLocation` := its location *after* — both formatted via the same `formatFgLocation`, both in the
+same transaction as the update itself. `warehouseId` is required (a transfer always names a real
+destination, validated against the real `warehouses` table); **`rackBinLocation` omitted clears the
+batch's existing bin rather than carrying it over** — a bin label from the old warehouse almost
+certainly doesn't mean anything in a different one, so silently keeping it would misrepresent where
+the batch actually is. **Rejected for a fully `Dispatched` batch** (`409`) — a dispatched batch has
+physically left the warehouse, so "transfer" doesn't mean anything for it anymore;
+`Available`/`Reserved`/`Hold`/`Partial` can all still move.
+
+**`PATCH /api/fg-batches/:fgBatchNo/hold` and `/release-hold`.** `hold` sets `stockStatus = 'Hold'`
+and logs a `Held` movement (an optional reason in `notes`); rejects (`409`) an already-`Hold` batch
+rather than silently no-op'ing — a caller asking to hold a batch that's already held almost
+certainly has a stale view of its state, and a clear error surfaces that instead of masking it.
+`release-hold` is the mirror: rejects (`409`) a batch that isn't currently `Hold`, and **recomputes
+the correct post-release `stockStatus` from `reservedQty` rather than always defaulting to
+`Available`** — a batch that already had a nonzero reservation before it was held returns to
+`Reserved`, not a falsely-available state, once released. (`reservedQty` itself is only ever set by
+Part 3's future reservation actions; this just restores whatever status that quantity already
+implies.)
+
+> **⚠️ Flagged for Parts 3–4, not enforced here (can't be yet):** a batch on `Hold` must **not** be
+> reservable or dispatchable. Reservation and Dispatch don't exist as endpoints in this codebase
+> yet, so there is nowhere to actually add that guard until they're built — Parts 3/4 **must**
+> check `stockStatus !== 'Hold'` (server-side, not just a UI affordance) before reserving/dispatching
+> a batch, or Hold becomes a purely cosmetic status. Noted here explicitly so it isn't missed once
+> those parts start.
+
+**`GET /api/fg-batches/:fgBatchNo/movements`.** The full ledger for one batch, **oldest first** —
+a true chronological history reads top-to-bottom in the order things actually happened, and the
+batch's own `BatchCreated` row is always first. Paginated for consistency with every other list
+endpoint in this app, even though a single batch's history realistically never gets long enough to
+need it.
+
+**Permissions.** A **new** entry, `fgStockMovements` (`read: STORE_AND_PRODUCTION`, `write:
+STORE_ONLY`) — distinct from `fgBatch`'s own `write: PRODUCTION_ONLY` (batch *creation*). This is
+exactly the "warehouse/bin assignment... actions" Part 1's `fgBatch` permissions-table comment
+already pointed forward to: transfer, hold, and release-hold are inventory/warehouse territory, so
+`StoreManager` (not `ProductionManager`) can write them, while both roles can still read everything
+as usual.
 
 ## Assumptions
 
