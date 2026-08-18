@@ -29,6 +29,8 @@ import qcRouter from './modules/qc/qc.routes';
 import qcInspectionRouter from './modules/qcInspection/qcInspection.routes';
 import dashboardRouter from './modules/dashboard/dashboard.routes';
 import orderStatusDashboardRouter from './modules/orderStatusDashboard/orderStatusDashboard.routes';
+import warehousesRouter from './modules/warehouses/warehouses.routes';
+import fgBatchRouter from './modules/fgBatch/fgBatch.routes';
 import authRouter from './modules/auth/auth.routes';
 
 installBigIntJsonSupport();
@@ -78,6 +80,8 @@ export function createApp(): Express {
   app.use('/api/qc-inspections', qcInspectionRouter);
   app.use('/api/dashboard', dashboardRouter);
   app.use('/api/order-status-dashboard', orderStatusDashboardRouter);
+  app.use('/api/warehouses', warehousesRouter);
+  app.use('/api/fg-batches', fgBatchRouter);
   app.use('/api/auth', authRouter);
 
   app.use(notFoundHandler);

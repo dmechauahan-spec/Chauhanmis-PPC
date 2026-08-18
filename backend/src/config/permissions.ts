@@ -46,4 +46,14 @@ export const PERMISSIONS = {
   search: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // read-only module — write unused
   dashboard: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // read-only module — write unused
   orderStatusDashboard: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // read-only module — write unused; same shape as dashboard — see README "Client Flow Part 5"
+
+  // --- FG Module (Finished Goods) — see README "FG Module Part 1" for the
+  // full role-split judgment call this pair of lines records. ---
+  warehouses: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY }, // master data, same convention as Lines/Machines
+  // FG batch CREATION is production-side: the natural next step right after
+  // a QC pass, same domain as qcInspections. Later parts' warehouse/bin
+  // assignment, reservation, and dispatch actions are StoreManager
+  // (inventory/warehouse) territory instead and will get their own entries
+  // here when built — not this one.
+  fgBatch: { read: STORE_AND_PRODUCTION, write: PRODUCTION_ONLY },
 } as const;

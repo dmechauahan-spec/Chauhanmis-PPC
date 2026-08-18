@@ -158,6 +158,8 @@ search, and the other side's data included) — the split only applies to **writ
 | Shortage Report | StoreManager, ProductionManager | Admin only | Read-only module. |
 | Search | StoreManager, ProductionManager | Admin only | Read-only module. |
 | Dashboard | StoreManager, ProductionManager | Admin only | Read-only module. |
+| Warehouses | StoreManager, ProductionManager | Admin only | Master data, same reasoning as Lines/Products — see README "FG Module Part 1". |
+| FG Batch | StoreManager, ProductionManager | ProductionManager | FG batch *creation* only (`POST /generate`) — a continuation of QC, not a warehouse action. Later FG-module parts' warehouse/reservation/dispatch actions are StoreManager territory instead and will get their own row when built — see README "FG Module Part 1" for the full judgment call. |
 
 "Admin only" write rows have no route in that module reachable by `StoreManager`/`ProductionManager`
 at all — `Admin` passing every check is what makes those routes reachable, not a third explicit
@@ -1931,6 +1933,129 @@ phrasing it as a direct citation would overstate what's actually known here):
 
 The **frontend UI** for any of this — Parts 1 through 5 alike — is explicitly **out of scope** for
 this backend work and is a separate, later set of prompts once this backend has been reviewed.
+
+### FG Module Part 1 — Warehouse + FG Batch Core
+
+A **new, separate module** — not part of the 5-part Client Flow addition above, though it reuses
+several of that addition's pieces (the Daily QC Inspection module, the shared sequential-id
+generator). Built for the plywood manufacturing client's own specific requirement, quoted directly
+from their spec and treated as load-bearing for every part of this module, not just Part 1:
+
+> *"FG stock ko manually simple quantity entry ke roop mein na banaya jaye. FG should be
+> transaction-based and linked with PPC/Production, QC, Sales Order, Warehouse and Dispatch. Only
+> QC-passed quantity should become dispatch-eligible FG."*
+
+Concretely: there is **no endpoint anywhere in this module that accepts a raw FG quantity**. The
+only way an `fg_batches` row ever comes into existence is `POST /api/fg-batches/generate`, and
+every field on it is either copied from a real, already-validated Daily QC Inspection row or
+derived from the order/product that inspection belongs to — never a number a caller just types in.
+
+**Warehouse — new lightweight master data.** `warehouses` (`warehouseId`, `warehouseName`,
+`location?`, `isActive`), full CRUD at `/api/warehouses`, `Admin`-only write — same convention as
+Lines/Machines/Products (physical/master config, not a day-to-day floor or warehouse action).
+`isActive` is a normal settable field (like `Machine.status`), not the only way to remove a
+warehouse — `DELETE` also exists, same as Machines/Lines/Products; `fg_batches.warehouseId` has no
+DB-level FK to it (see below), so deleting a warehouse a batch still references never fails
+underneath a caller — deactivate via `isActive: false` instead if batches should keep pointing at
+a real-but-retired warehouse record.
+
+**Plywood attributes on `Product`.** `plywoodGrade` (`MR`/`BWR`/`BWP`/`Other`), `thickness`,
+`sheetLength`, `sheetWidth` — all nullable, added to the *existing* Model Master table rather than
+a new one, because these are product properties (every unit of a given SKU has the same nominal
+grade/thickness/sheet size), not batch-specific data. This is what lets an FG batch default its own
+plywood fields from the product it was made from instead of asking an operator to re-enter them
+every time (see below). Nullable because most products in this system aren't plywood at all — no
+existing product, and no existing `products.test.ts` assertion, is affected by their addition.
+
+**The QC-Inspection-to-FG-Batch trigger — strictly 1:1, explicit, never automatic.** `POST
+/api/fg-batches/generate` takes `{ qcInspectionId, warehouseId?, rackBinLocation?, salesOrderId?,
+productionDate?, plywoodGrade?, thickness?, sheetLength?, sheetWidth? }` and, in order:
+
+1. Loads the inspection via `qcInspection.service.ts`'s own `getQcInspectionById` (reused as-is,
+   not re-queried) — 404 if it doesn't exist.
+2. Rejects with `409` if `passedQty <= 0` — the client's core rule, enforced at the one place a
+   batch can be created, not left to be a documentation-only convention.
+3. Rejects with `409` (a clear "already converted to FG batch '`X`'" message, not a raw DB error)
+   if this inspection already has a batch. Checked proactively first (the common case, and the
+   nicest error path); `fg_batches.qc_inspection_id`'s `@unique` constraint is the actual
+   enforcement underneath, and a P2002 on specifically *that* constraint (distinguished from an
+   `fgBatchNo` sequence collision via the Prisma error's `meta.target` — see
+   `isQcInspectionIdConflict` in `fgBatch.service.ts`) is caught and translated to the same clear
+   error, closing the race a plain pre-check alone can't.
+4. Loads the inspection's order (`productionOrderId` := `inspection.orderId`, `customer` :=
+   `order.client`, `productName`/`sku` := `order.product`/`order.sku`) together with that order's
+   product (via `Order.productRef`) for the plywood defaults. **These four order-derived fields are
+   never accepted as body overrides** — only the plywood attributes are — so a batch can never be
+   pointed at a different order or product than the inspection it actually came from, preserving
+   the traceability the client's spec asks for. The plywood attributes *are* overridable: a real
+   batch's physical dimensions can legitimately differ from its product's nominal master-data spec
+   (cutting tolerance, a one-off variant run, ...), so `input.plywoodGrade ?? product.plywoodGrade`
+   (and likewise for thickness/sheetLength/sheetWidth) rather than always trusting the master data.
+5. Validates `warehouseId` against the real `warehouses` table if supplied (service-layer check,
+   same pattern as `dailyLogId`'s cross-order validation in Part 3) — a clear `400` for an unknown
+   one, not a silently-accepted dangling reference.
+6. `productionDate` defaults to the inspection's own `inspectionDate` if omitted — the closest
+   thing to "when this became real" already on hand — but is accepted as an override too, since
+   actual production can predate the day QC certified it.
+7. Generates `fgBatchNo` via the **same shared `sequentialIdGenerator`** Module 3's `logId` and
+   Module 9's `prNumber` already use (`FG-YYYYMMDD-NN`, date-sequence-with-retry-on-collision) —
+   not a third reimplementation of that scheme. Sequenced off the batch's own `productionDate`
+   (not "today"), so batches from the same production day number together meaningfully, mirroring
+   `logId`'s own choice over `prNumber`'s "today" default.
+8. Creates the row inside a `prisma.$transaction`. `qcStatus` is explicitly set to `Pass` in code
+   (not just left to the schema default) precisely because it's a real business decision worth
+   reading in the service, not something a reader should have to cross-reference
+   `schema.prisma` to understand: this endpoint only ever fires from an inspection with a real
+   `passedQty` (checked in step 2), so there is no code path here that could produce
+   `Fail`/`Hold`/`Pending` — those become reachable later, via Part 2's hold mechanism, not at
+   creation time. `reservedQty`/`dispatchedQty`/`stockStatus`/`dispatchStatus` are left to their
+   schema defaults (`0`/`0`/`Available`/`Ready`) — a freshly QC-passed batch is immediately
+   dispatch-eligible unless something later puts it on hold, which is exactly what the client's
+   core rule implies ("only QC-passed quantity *should become* dispatch-eligible FG" — passing QC
+   is the trigger, not a separate manual "make it dispatchable" step).
+
+**`availableQty` is deliberately NEVER a stored column — read this before adding one.**
+`fg_batches` stores `qcPassedQty`, `reservedQty`, `dispatchedQty`; "how much of this batch is
+actually free to sell/dispatch right now" is `qcPassedQty - reservedQty - dispatchedQty`, computed
+by one shared function (`computeAvailableQty` in `fgBatch.service.ts`) that every code path
+returning an `FgBatch` — list, detail, and the create response itself — goes through via `toOutput`.
+The alternative (a stored `available_qty` column, updated alongside every reservation/dispatch
+write) was deliberately rejected: it would require every future write path (Part 2's reservation,
+Part 3/4's transfer/dispatch) to remember to keep a fourth number in sync with the other three, and
+any missed update — a bug, a partial transaction, a direct DB edit — would silently drift the
+stored total away from the truth with no way to detect it short of an audit. Computing it fresh
+every time makes that entire class of bug structurally impossible instead of something to
+discipline yourself into remembering.
+
+**The role-split judgment call — confirmed as proposed.** FG batch *creation* (`fgBatch.write`) is
+`Admin`/`ProductionManager`: it's the natural continuation of a QC pass, same domain as
+`qcInspections`, and happens on the production floor's own timeline (right after an inspection),
+not the warehouse's. Warehouse master data (`warehouses.write`) is `Admin`-only, same convention as
+Lines/Machines/Products. This part deliberately does **not** yet grant `StoreManager` any write
+access in this module — Parts 2–4's actual warehouse/bin assignment, reservation, and dispatch
+actions are where that inventory-side territory begins, and each will get its own permissions-table
+entry when built, rather than this part speculatively granting `StoreManager` write access to an
+endpoint (`generate`) that isn't really theirs. Both roles can already **read** everything here
+(`STORE_AND_PRODUCTION`), consistent with the rest of this codebase's "reads are shared, writes are
+split" convention.
+
+**What's deferred to Part 2, on purpose.** The initial `BatchCreated` movement-ledger entry the
+original brief mentions is **not** built in Part 1 — Part 2 is explicitly where that ledger table
+gets designed, and stubbing a throwaway version of it now (before its real shape is known) risked
+either blocking this part on a guess or getting redesigned/discarded the moment Part 2 actually
+defines it. `generateFgBatch`'s create already runs inside a `prisma.$transaction` specifically so
+Part 2 can add that movement-log insert into the *same* atomic unit without restructuring this
+function — nothing here needs to change shape to accommodate it later, only grow. Also deferred:
+`FgQcStatus.Fail`/`Hold`, warehouse/bin *reassignment* (this part only accepts an initial
+`warehouseId`/`rackBinLocation` at creation), reservation, transfer, and dispatch — all Parts 2–4.
+
+**`GET /api/fg-batches`** — paginated, filterable by `productionOrderId`, `salesOrderId`,
+`warehouseId`, `qcStatus`, `stockStatus`, `dispatchStatus`; every row includes the computed
+`availableQty`. **`GET /api/fg-batches/:fgBatchNo`** — the same fields plus the linked order's and
+QC inspection's basic info inlined (`order`/`qcInspectionSummary`, a small hand-picked subset of
+each — see `fgBatch.service.ts`'s `includeLinked`), so the most commonly-needed context doesn't
+cost a second round trip; not a substitute for `GET /api/orders/:orderId` or
+`GET /api/qc-inspections/:id` themselves.
 
 ## Assumptions
 

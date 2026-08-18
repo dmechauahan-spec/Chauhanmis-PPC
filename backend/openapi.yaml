@@ -57,6 +57,8 @@ tags:
   - name: QC Inspections
   - name: Dashboard
   - name: Order Status Dashboard
+  - name: Warehouses
+  - name: FG Batches
 
 components:
   securitySchemes:
@@ -109,6 +111,14 @@ components:
         noOfStations: { type: integer }
         changeoverTimeMin: { type: number, nullable: true }
         notes: { type: string, nullable: true }
+        plywoodGrade:
+          type: string
+          nullable: true
+          enum: [MR, BWR, BWP, Other]
+          description: FG Module Part 1. Null for non-plywood products — see README "FG Module Part 1".
+        thickness: { type: number, nullable: true, description: 'FG Module Part 1. mm.' }
+        sheetLength: { type: number, nullable: true, description: 'FG Module Part 1. mm.' }
+        sheetWidth: { type: number, nullable: true, description: 'FG Module Part 1. mm.' }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
 
@@ -1220,6 +1230,92 @@ components:
           type: string
           enum: ['🟢 On Track', '🟡 At Risk', '🔴 Delayed', '🔵 QC Pending', '✅ Completed']
           description: Derived by strict precedence (most urgent wins) — see README "Client Flow Part 5" for the full table.
+
+    Warehouse:
+      type: object
+      description: FG Module Part 1. New, lightweight master data — see README "FG Module Part 1".
+      properties:
+        warehouseId: { type: string, example: WH-01 }
+        warehouseName: { type: string }
+        location: { type: string, nullable: true }
+        isActive: { type: boolean, default: true }
+
+    FgBatch:
+      type: object
+      description: >
+        FG Module Part 1. Created ONLY via POST /fg-batches/generate — never a direct manual
+        quantity entry. See README "FG Module Part 1" for the full generation/derivation design.
+      properties:
+        id: { type: integer, readOnly: true }
+        fgBatchNo: { type: string, readOnly: true, example: FG-20260818-01, description: Generated via the shared sequential-id scheme (Module 3/9), sequenced off productionDate. }
+        productionOrderId: { type: string, readOnly: true, description: Always derived from the QC inspection's own order — never client-supplied. }
+        qcInspectionId: { type: integer, readOnly: true, description: 'Unique: an inspection can produce at most one FG batch, ever.' }
+        salesOrderId: { type: integer, nullable: true, description: No SalesOrder table exists yet in this codebase — plain optional reference for a future part. }
+        customer: { type: string, nullable: true, readOnly: true, description: order.client at generation time. }
+        productName: { type: string, readOnly: true, description: order.product at generation time. }
+        sku: { type: string, readOnly: true, description: order.sku at generation time. }
+        plywoodGrade:
+          type: string
+          nullable: true
+          enum: [MR, BWR, BWP, Other]
+          description: Defaults from the product's own plywoodGrade; overridable per batch at generation time.
+        thickness: { type: number, nullable: true, description: mm. Defaults from the product; overridable. }
+        sheetLength: { type: number, nullable: true, description: mm. Defaults from the product; overridable. }
+        sheetWidth: { type: number, nullable: true, description: mm. Defaults from the product; overridable. }
+        productionDate: { type: string, format: date, description: Defaults to the QC inspection's own inspectionDate; overridable. }
+        producedQty: { type: number, readOnly: true, description: Copied from the triggering QC inspection. }
+        qcPassedQty: { type: number, readOnly: true, description: Copied from the triggering QC inspection's passedQty. }
+        reworkQty: { type: number, readOnly: true, description: Copied from the triggering QC inspection. }
+        rejectedQty: { type: number, readOnly: true, description: Copied from the triggering QC inspection. }
+        qcStatus:
+          type: string
+          enum: [Pending, Pass, Fail, Hold]
+          description: Always Pass on generate (this endpoint only ever fires from a real passedQty). Fail/Hold are set later via Part 2's hold mechanism, not at creation.
+        warehouseId: { type: string, nullable: true, description: 'Plain, service-validated string — no DB-level FK. Set at generation or (Part 2+) reassigned later.' }
+        rackBinLocation: { type: string, nullable: true }
+        reservedQty: { type: number, readOnly: true, description: Always 0 at generation — only Part 2's future reservation actions ever change this. }
+        dispatchedQty: { type: number, readOnly: true, description: Always 0 at generation — only Part 4's future dispatch actions ever change this. }
+        availableQty:
+          type: number
+          readOnly: true
+          description: >
+            NEVER a stored column — always computed as qcPassedQty - reservedQty - dispatchedQty at
+            read time (see README "FG Module Part 1"), so it can never drift from its components.
+        stockStatus:
+          type: string
+          enum: [Available, Reserved, Hold]
+          description: Always Available at generation.
+        dispatchStatus:
+          type: string
+          enum: [NotReady, Ready, Partial, Dispatched]
+          description: Always Ready at generation — a freshly QC-passed batch is immediately dispatch-eligible unless a later part puts it on hold.
+        createdBy: { type: string, readOnly: true, description: 'The authenticated caller''s name — never client-supplied.' }
+        createdAt: { type: string, format: date-time, readOnly: true }
+        order:
+          type: object
+          readOnly: true
+          description: Detail endpoint only — the linked production order's basic info, inlined so the UI doesn't need a second lookup.
+          properties:
+            orderId: { type: string }
+            client: { type: string }
+            sku: { type: string }
+            product: { type: string }
+            qty: { type: integer }
+            status: { type: string }
+            dueDate: { type: string, format: date, nullable: true }
+        qcInspectionSummary:
+          type: object
+          readOnly: true
+          description: Detail endpoint only — the triggering QC inspection's basic info, inlined.
+          properties:
+            id: { type: integer }
+            inspectionDate: { type: string, format: date }
+            producedQty: { type: number }
+            passedQty: { type: number }
+            rejectedQty: { type: number }
+            reworkQty: { type: number }
+            inspectorName: { type: string }
+            qcStatus: { type: string }
 
 paths:
   /auth/login:
@@ -3270,3 +3366,138 @@ paths:
                   total: { type: integer }
                   page: { type: integer }
                   pageSize: { type: integer }
+
+  /warehouses:
+    get:
+      tags: [Warehouses]
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: isActive
+          in: query
+          schema: { type: boolean }
+      responses:
+        '200': { description: Paginated list of warehouses }
+    post:
+      tags: [Warehouses]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Warehouse' }
+      responses:
+        '201': { description: Created }
+        '400': { description: Validation error }
+        '409': { description: Duplicate warehouseId (generic P2002 mapping) }
+
+  /warehouses/{warehouseId}:
+    parameters:
+      - name: warehouseId
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Warehouses]
+      responses:
+        '200': { description: Warehouse }
+        '404': { description: Not found }
+    patch:
+      tags: [Warehouses]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Warehouse' }
+      responses:
+        '200': { description: Updated }
+        '400': { description: No fields provided }
+        '404': { description: Not found }
+    delete:
+      tags: [Warehouses]
+      description: >
+        Hard delete. warehouseId on fg_batches has no DB-level FK (see README "FG Module Part
+        1"), so this never fails on batches still referencing it — deactivate via isActive: false
+        instead if a batch should keep pointing at a real-but-retired record.
+      responses:
+        '200': { description: Deleted }
+        '404': { description: Not found }
+
+  /fg-batches/generate:
+    post:
+      tags: [FG Batches]
+      summary: The ONLY way an FgBatch row is ever created
+      description: >
+        FG Module Part 1. See README "FG Module Part 1" for the full step-by-step design: order/
+        product fields are always derived from the QC inspection's own linked order (never client-
+        supplied); plywood attributes default from the product but are overridable per batch;
+        fgBatchNo is generated via the shared sequential-id scheme, sequenced off productionDate.
+        Requires Admin/ProductionManager — a continuation of QC, not a warehouse action (see the
+        role-split judgment call in README).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [qcInspectionId]
+              properties:
+                qcInspectionId: { type: integer, example: 42 }
+                warehouseId: { type: string }
+                rackBinLocation: { type: string }
+                salesOrderId: { type: integer }
+                productionDate: { type: string, format: date }
+                plywoodGrade: { type: string, enum: [MR, BWR, BWP, Other] }
+                thickness: { type: number }
+                sheetLength: { type: number }
+                sheetWidth: { type: number }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FgBatch' }
+        '400': { description: Validation error, including an unknown warehouseId }
+        '404': { description: Unknown qcInspectionId (or, defensively, its order) }
+        '409': { description: 'passedQty <= 0 on the inspection, or this inspection has already been converted to an FG batch' }
+
+  /fg-batches:
+    get:
+      tags: [FG Batches]
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: productionOrderId
+          in: query
+          schema: { type: string }
+        - name: salesOrderId
+          in: query
+          schema: { type: integer }
+        - name: warehouseId
+          in: query
+          schema: { type: string }
+        - name: qcStatus
+          in: query
+          schema: { type: string, enum: [Pending, Pass, Fail, Hold] }
+        - name: stockStatus
+          in: query
+          schema: { type: string, enum: [Available, Reserved, Hold] }
+        - name: dispatchStatus
+          in: query
+          schema: { type: string, enum: [NotReady, Ready, Partial, Dispatched] }
+      responses:
+        '200': { description: Paginated list of FG batches, each including the computed availableQty }
+
+  /fg-batches/{fgBatchNo}:
+    parameters:
+      - name: fgBatchNo
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [FG Batches]
+      responses:
+        '200':
+          description: FG batch detail, including the linked order and QC inspection's basic info inlined
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FgBatch' }
+        '404': { description: Not found }

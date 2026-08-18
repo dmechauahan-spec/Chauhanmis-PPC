@@ -95,6 +95,52 @@ enum QcInspectionStatus {
   Rejected
 }
 
+// FG Module Part 1 — Finished Goods. Plywood-specific product attributes
+// (see README "FG Module Part 1"). `Other` covers grades outside the three
+// named ones rather than leaving the field a free-form string, matching how
+// every other status/category-like field in this schema is already an enum.
+enum PlywoodGrade {
+  MR
+  BWR
+  BWP
+  Other
+}
+
+// FG Module Part 1. Distinct from QcInspectionStatus above — that's Daily QC
+// Inspection's own derived status; this is the FG batch's own QC state.
+// `Pending`/`Fail`/`Hold` are not produced by POST /api/fg-batches/generate
+// (which only ever fires from an inspection with a real passedQty and always
+// creates with `Pass`) — they're reachable later via Part 2's hold
+// mechanism. See README "FG Module Part 1".
+enum FgQcStatus {
+  Pending
+  Pass
+  Fail
+  Hold
+}
+
+// FG Module Part 1. Available stock is never a stored value — see
+// `computeAvailableQty` in fgBatch.service.ts and README "FG Module Part 1"
+// for why. This enum is the batch's own held-vs-free-vs-reserved state, set
+// by Part 2's future reservation/hold actions (Part 1 only ever creates a
+// batch as `Available`).
+enum FgStockStatus {
+  Available
+  Reserved
+  Hold
+}
+
+// FG Module Part 1. `Ready` is the default on generate — see README "FG
+// Module Part 1" for why a freshly QC-passed batch starts dispatch-eligible
+// rather than `NotReady`. `Partial`/`Dispatched` are set later by Part 4's
+// dispatch actions.
+enum FgDispatchStatus {
+  NotReady
+  Ready
+  Partial
+  Dispatched
+}
+
 // ============================================================================
 // 1. MODEL MASTER
 // ============================================================================
@@ -110,6 +156,16 @@ model Product {
   notes             String?
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @default(now()) @updatedAt @map("updated_at")
+
+  // FG Module Part 1 — plywood-specific attributes, all nullable since not
+  // every product in this system is plywood (see README "FG Module Part
+  // 1"). Product-level defaults an FG batch can pull from at generation
+  // time; a specific batch's own fields can still differ (see
+  // fgBatch.schema.ts).
+  plywoodGrade PlywoodGrade? @map("plywood_grade")
+  thickness    Decimal?      @db.Decimal(6, 2)
+  sheetLength  Decimal?      @map("sheet_length") @db.Decimal(8, 2)
+  sheetWidth   Decimal?      @map("sheet_width") @db.Decimal(8, 2)
 
   bomComponents BomComponent[]
   orders        Order[]
@@ -289,6 +345,7 @@ model Order {
   productionPlan  DailyProductionPlan[]
   qcInspections   DailyQcInspection[]
   closureSummary  OrderClosureSummary?
+  fgBatches       FgBatch[]
 
   @@index([status])
   @@index([sku])
@@ -621,7 +678,8 @@ model DailyQcInspection {
   inspectorName  String             @map("inspector_name")
   createdAt      DateTime           @default(now()) @map("created_at")
 
-  order Order @relation(fields: [orderId], references: [orderId], onDelete: Cascade)
+  order   Order    @relation(fields: [orderId], references: [orderId], onDelete: Cascade)
+  fgBatch FgBatch?
 
   @@index([orderId])
   @@index([inspectionDate])
@@ -656,6 +714,88 @@ model OrderClosureSummary {
   order Order @relation(fields: [orderId], references: [orderId], onDelete: Cascade)
 
   @@map("order_closure_summaries")
+}
+
+// ============================================================================
+// FG MODULE PART 1 — WAREHOUSE + FG BATCH CORE
+//
+// New, separate module (not part of the 5-part Client Flow addition above,
+// though it reuses several of that addition's pieces — the Daily QC
+// Inspection module, the sequential-id generator). Built for the plywood
+// manufacturing client's own requirement: QC-passed production must become
+// traceable, warehouse-located, reservable, dispatch-eligible stock — never
+// a manually-entered quantity. See README "FG Module Part 1" for the full
+// design rationale, including the availableQty-always-computed decision and
+// the role-split judgment call.
+// ============================================================================
+
+model Warehouse {
+  id            BigInt  @id @default(autoincrement())
+  warehouseId   String  @unique @map("warehouse_id")
+  warehouseName String  @map("warehouse_name")
+  location      String?
+  isActive      Boolean @default(true) @map("is_active")
+
+  @@map("warehouses")
+}
+
+// One row per QC-passed batch, created only via POST /api/fg-batches/generate
+// from an existing Daily QC Inspection — never a direct manual insert of a
+// quantity. `qcInspectionId`'s `@unique` is the DB-level enforcement of the
+// 1:1 QC-Inspection-to-FG-Batch trigger design (see README): an inspection
+// can produce at most one FG batch, ever.
+//
+// `warehouseId` is a plain, service-validated string, not a DB-level FK —
+// same "soft reference" pattern as Part 2/3's lineId/machineId/dailyLogId on
+// daily_production_plan/daily_qc_inspections (see those models' own
+// comments) — Part 2 of this module will build the actual warehouse-
+// assignment/transfer actions against it. `salesOrderId` has no relation at
+// all yet: no SalesOrder table exists in this codebase — it's accepted as a
+// plain optional reference for a future part to define.
+model FgBatch {
+  id                BigInt           @id @default(autoincrement())
+  fgBatchNo         String           @unique @map("fg_batch_no")
+  productionOrderId String           @map("production_order_id")
+  qcInspectionId    BigInt           @unique @map("qc_inspection_id")
+  salesOrderId      BigInt?          @map("sales_order_id")
+  customer          String?
+  productName       String           @map("product_name")
+  sku               String
+  plywoodGrade      PlywoodGrade?    @map("plywood_grade")
+  thickness         Decimal?         @db.Decimal(6, 2)
+  sheetLength       Decimal?         @map("sheet_length") @db.Decimal(8, 2)
+  sheetWidth        Decimal?         @map("sheet_width") @db.Decimal(8, 2)
+  productionDate    DateTime         @map("production_date") @db.Date
+  producedQty       Decimal          @map("produced_qty") @db.Decimal(12, 2)
+  qcPassedQty       Decimal          @map("qc_passed_qty") @db.Decimal(12, 2)
+  reworkQty         Decimal          @default(0) @map("rework_qty") @db.Decimal(12, 2)
+  rejectedQty       Decimal          @default(0) @map("rejected_qty") @db.Decimal(12, 2)
+  qcStatus          FgQcStatus       @default(Pass) @map("qc_status")
+  warehouseId       String?          @map("warehouse_id")
+  rackBinLocation   String?          @map("rack_bin_location")
+  // reservedQty/dispatchedQty are only ever written by Part 2/4's future
+  // reservation/dispatch actions — Part 1's generate endpoint always creates
+  // a batch with both at their schema default (0). `availableQty` is
+  // DELIBERATELY NOT a column here — see README "FG Module Part 1": it is
+  // always computed as qcPassedQty - reservedQty - dispatchedQty at
+  // read/serialization time (computeAvailableQty in fgBatch.service.ts), to
+  // make drift between a stored total and its components structurally
+  // impossible rather than something to remember to keep in sync.
+  reservedQty       Decimal          @default(0) @map("reserved_qty") @db.Decimal(12, 2)
+  dispatchedQty     Decimal          @default(0) @map("dispatched_qty") @db.Decimal(12, 2)
+  stockStatus       FgStockStatus    @default(Available) @map("stock_status")
+  dispatchStatus    FgDispatchStatus @default(Ready) @map("dispatch_status")
+  createdBy         String           @map("created_by")
+  createdAt         DateTime         @default(now()) @map("created_at")
+
+  order        Order             @relation(fields: [productionOrderId], references: [orderId])
+  qcInspection DailyQcInspection @relation(fields: [qcInspectionId], references: [id])
+
+  @@index([productionOrderId])
+  @@index([warehouseId])
+  @@index([stockStatus])
+  @@index([dispatchStatus])
+  @@map("fg_batches")
 }
 
 // ============================================================================
