@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
-import { UserRole } from '@prisma/client';
+import { PrStatus, UserRole } from '@prisma/client';
 import { buildTestApp } from '../../testUtils/buildTestApp';
 import { prisma } from '../../db/client';
 import { createTestUserWithAuthHeader } from '../../testUtils/auth';
@@ -61,10 +61,43 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (createdPrIds.length > 0) {
-    await prisma.prStatusHistory.deleteMany({ where: { prId: { in: createdPrIds } } });
-    await prisma.prLineItem.deleteMany({ where: { prId: { in: createdPrIds } } });
-    await prisma.purchaseRequisition.deleteMany({ where: { id: { in: createdPrIds } } });
+  // Sweep by PART REFERENCE, not just by createdPrIds this particular run
+  // happened to track — trackPr() only ever fires on a test's own success
+  // path (see above), so a PR that a PAST, differently-failed run of this
+  // same file managed to create (e.g. it got as far as a real 201, but a
+  // LATER assertion in that same it() then failed, well after trackPr()
+  // already ran... or, as actually happened: a run that failed for some
+  // unrelated reason before this test file's own generate call even ran
+  // this specific check) is invisible to createdPrIds-based cleanup and
+  // leaks past it forever. This is not hypothetical: PurchaseRequisition
+  // #548 (prNumber PR-20260818-01, status Draft) sat in the test DB from a
+  // prior run, referencing testPart with netRequirementQty=500 — and
+  // because generatePurchaseRequisition's own netRequirementCalculator
+  // deliberately nets a NEW run's demand against every in-pipeline
+  // (Draft/Sent/Approved) PR's already-requisitioned quantity, that one
+  // leaked row silently absorbed this test's entire expected 500-unit
+  // shortfall on every subsequent run, making "consolidates five active
+  // orders..." deterministically return created:false instead of true —
+  // with no error, no leftover-order collision, nothing to point at the
+  // real cause. Sweeping by partId here — not just Draft (the specific
+  // reproduced case) but every in-pipeline status, since Sent/Approved feed
+  // the same calculation identically — closes that whole class of failure,
+  // not just this one instance of it. Cancelled/Fulfilled PRs referencing
+  // these parts are left alone: they don't feed the calculation (see
+  // sumAlreadyRequisitionedByPart's own comment), so they're harmless
+  // historical records, same as createdPrIds's own cleanup never touching
+  // other tests' PRs.
+  const testOwnedPartIds = [testPart, ...extraPartIds];
+  const leakedLineItems = await prisma.prLineItem.findMany({
+    where: { partId: { in: testOwnedPartIds }, pr: { status: { in: [PrStatus.Draft, PrStatus.Sent, PrStatus.Approved] } } },
+    select: { prId: true },
+  });
+  const allPrIds = [...new Set([...createdPrIds, ...leakedLineItems.map((li) => li.prId)])];
+
+  if (allPrIds.length > 0) {
+    await prisma.prStatusHistory.deleteMany({ where: { prId: { in: allPrIds } } });
+    await prisma.prLineItem.deleteMany({ where: { prId: { in: allPrIds } } });
+    await prisma.purchaseRequisition.deleteMany({ where: { id: { in: allPrIds } } });
   }
   await prisma.orderBomRequirement.deleteMany({ where: { orderId: { in: [...orderIds, ...extraOrderIds] } } });
   await prisma.order.deleteMany({ where: { orderId: { in: [...orderIds, ...extraOrderIds] } } });
