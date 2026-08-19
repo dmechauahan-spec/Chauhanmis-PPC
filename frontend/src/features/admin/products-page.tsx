@@ -15,6 +15,7 @@ import { Table, TableHeader, TableRow, TableHead, TableBody, TableCell } from "@
 import { DEFAULT_PAGE_SIZE } from "@/lib/pagination";
 import { apiErrorMessage } from "@/lib/api-client";
 import { formatDecimal, formatNumber } from "@/lib/format";
+import type { Product } from "@/types/api";
 
 const CAN_WRITE_ROLES = new Set(["Admin"]);
 
@@ -141,6 +142,7 @@ export function ProductsPage() {
                   <TableHead className="text-right">Manpower</TableHead>
                   <TableHead className="text-right">Stations</TableHead>
                   <TableHead className="text-right">Changeover (min)</TableHead>
+                  <TableHead>Plywood</TableHead>
                   {canWrite && <TableHead />}
                 </TableRow>
               </TableHeader>
@@ -156,6 +158,9 @@ export function ProductsPage() {
                     <TableCell numeric>{formatNumber(product.noOfStations)}</TableCell>
                     <TableCell numeric className="text-ink-muted">
                       {product.changeoverTimeMin != null ? formatDecimal(product.changeoverTimeMin, 1) : "—"}
+                    </TableCell>
+                    <TableCell>
+                      <PlywoodSpecs product={product} />
                     </TableCell>
                     {canWrite && (
                       <TableCell>
@@ -183,6 +188,28 @@ export function ProductsPage() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// FG Module Part 1 — shown only when at least one plywood attribute is set,
+// so non-plywood products (the majority) don't show a column full of dashes
+// — a single compact cell rather than three separate ones, matching the FG
+// Batches list's own "Grade/Thickness compact combined cell" convention.
+function PlywoodSpecs({ product }: { product: Product }) {
+  const { plywoodGrade, thickness, sheetLength, sheetWidth } = product;
+  if (!plywoodGrade && thickness == null && sheetLength == null && sheetWidth == null) {
+    return <span className="text-ink-faint">—</span>;
+  }
+  const size = sheetLength != null && sheetWidth != null ? `${formatDecimal(sheetLength, 0)}×${formatDecimal(sheetWidth, 0)}` : null;
+  return (
+    <div className="flex flex-col gap-0.5 font-mono text-xs">
+      {plywoodGrade && <span className="text-ink-primary">{plywoodGrade}</span>}
+      <span className="text-ink-muted">
+        {thickness != null && `${formatDecimal(thickness, 1)}mm`}
+        {thickness != null && size && " · "}
+        {size && `${size}mm`}
+      </span>
     </div>
   );
 }

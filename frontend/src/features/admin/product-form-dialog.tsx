@@ -1,13 +1,14 @@
 import * as React from "react";
-import { useForm } from "react-hook-form";
+import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { TriangleAlert } from "lucide-react";
 import { useCreateProduct, useUpdateProduct } from "./use-products-admin";
-import { productFormSchema, type ProductFormInput, type ProductFormValues } from "./product-schema";
+import { PLYWOOD_GRADES, productFormSchema, type ProductFormInput, type ProductFormValues } from "./product-schema";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Dialog,
   DialogTrigger,
@@ -46,12 +47,17 @@ export function ProductFormDialog({ product, trigger }: ProductFormDialogProps) 
       noOfStations: product?.noOfStations ?? 1,
       changeoverTimeMin: product?.changeoverTimeMin != null ? Number(product.changeoverTimeMin) : undefined,
       notes: product?.notes ?? "",
+      plywoodGrade: product?.plywoodGrade ?? undefined,
+      thickness: product?.thickness != null ? Number(product.thickness) : undefined,
+      sheetLength: product?.sheetLength != null ? Number(product.sheetLength) : undefined,
+      sheetWidth: product?.sheetWidth != null ? Number(product.sheetWidth) : undefined,
     };
   }
 
   const {
     register,
     handleSubmit,
+    control,
     reset,
     formState: { errors, isSubmitting },
   } = useForm<ProductFormInput, unknown, ProductFormValues>({
@@ -79,6 +85,10 @@ export function ProductFormDialog({ product, trigger }: ProductFormDialogProps) 
             noOfStations: values.noOfStations,
             changeoverTimeMin: values.changeoverTimeMin ?? null,
             notes: notes ?? null,
+            plywoodGrade: values.plywoodGrade ?? null,
+            thickness: values.thickness ?? null,
+            sheetLength: values.sheetLength ?? null,
+            sheetWidth: values.sheetWidth ?? null,
           },
         });
       } else {
@@ -92,6 +102,10 @@ export function ProductFormDialog({ product, trigger }: ProductFormDialogProps) 
           noOfStations: values.noOfStations,
           changeoverTimeMin: values.changeoverTimeMin,
           notes,
+          plywoodGrade: values.plywoodGrade,
+          thickness: values.thickness,
+          sheetLength: values.sheetLength,
+          sheetWidth: values.sheetWidth,
         });
       }
       setOpen(false);
@@ -173,6 +187,52 @@ export function ProductFormDialog({ product, trigger }: ProductFormDialogProps) 
                 className="w-full rounded-md border border-surface-border bg-surface-sunken px-3 py-2 text-sm text-ink-primary outline-none placeholder:text-ink-faint focus-visible:border-signal-amber/60 focus-visible:ring-2 focus-visible:ring-signal-amber/25"
                 {...register("notes")}
               />
+            </div>
+
+            {/* FG Module Part 1 — plywood-specific attributes, all
+                optional. Most products in this system aren't plywood, so
+                this section stays visually secondary (a labeled group, not
+                its own required block) rather than implying every product
+                needs it filled in. */}
+            <div className="flex flex-col gap-3 rounded-md border border-surface-border bg-surface-sunken p-3">
+              <p className="text-xs font-medium tracking-wide text-ink-muted uppercase">Plywood Attributes (optional)</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="plywoodGrade">Grade</Label>
+                  <Controller
+                    control={control}
+                    name="plywoodGrade"
+                    render={({ field }) => (
+                      <Select value={field.value} onValueChange={field.onChange}>
+                        <SelectTrigger id="plywoodGrade">
+                          <SelectValue placeholder="Not set" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {PLYWOOD_GRADES.map((g) => (
+                            <SelectItem key={g} value={g}>
+                              {g}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="thickness">Thickness (mm)</Label>
+                  <Input id="thickness" type="number" min={0} step="0.1" {...register("thickness")} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="sheetLength">Sheet Length (mm)</Label>
+                  <Input id="sheetLength" type="number" min={0} step="0.1" {...register("sheetLength")} />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="sheetWidth">Sheet Width (mm)</Label>
+                  <Input id="sheetWidth" type="number" min={0} step="0.1" {...register("sheetWidth")} />
+                </div>
+              </div>
             </div>
           </DialogBody>
           <DialogFooter>

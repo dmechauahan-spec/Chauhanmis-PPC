@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { optionalCoercedNumber } from "@/lib/zod-helpers";
 
+// FG Module Part 1 — plywood-specific attributes, all optional (most
+// products in this system aren't plywood) — mirrors ppc-backend's
+// products.schema.ts's plywoodGradeEnum exactly.
+export const PLYWOOD_GRADES = ["MR", "BWR", "BWP", "Other"] as const;
+
 // Mirrors ppc-backend's products.schema.ts — client-side copy for
 // immediate form feedback, not a replacement for the backend's own
 // validation on submit.
@@ -14,6 +19,10 @@ export const productFormSchema = z.object({
   noOfStations: z.coerce.number().int().positive("No. of stations must be > 0"),
   changeoverTimeMin: optionalCoercedNumber(z.number().nonnegative()),
   notes: z.string().optional(),
+  plywoodGrade: z.enum(PLYWOOD_GRADES).optional(),
+  thickness: optionalCoercedNumber(z.number().positive()),
+  sheetLength: optionalCoercedNumber(z.number().positive()),
+  sheetWidth: optionalCoercedNumber(z.number().positive()),
 });
 
 export type ProductFormInput = z.input<typeof productFormSchema>;

@@ -20,6 +20,11 @@ import {
   UserCog,
   TrendingUp,
   Table2,
+  Warehouse as WarehouseIcon,
+  PackageCheck,
+  ShoppingCart,
+  Truck,
+  LayoutDashboard,
 } from "lucide-react";
 import type { UserRole } from "@/types/api";
 
@@ -89,12 +94,29 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: "Testing Plans", to: "/testing-plans", icon: ClipboardCheck },
     ],
   },
+  // FG Module (Finished Goods) — a separate 5-part module, its own nav
+  // group rather than folded into Production/Materials/Admin: it's a
+  // distinct end-to-end flow (Warehouse -> FG Batch -> Reservation ->
+  // Dispatch -> Dashboard) with its own audience overlap across both
+  // StoreManager and ProductionManager, not a natural fit under any one
+  // existing group. See ppc-backend README "FG Module Part 5" for the
+  // module's own closing summary.
+  {
+    label: "Finished Goods",
+    items: [
+      { label: "FG Dashboard", to: "/fg-dashboard", icon: LayoutDashboard },
+      { label: "FG Batches", to: "/fg-batches", icon: PackageCheck },
+      { label: "Sales Orders", to: "/sales-orders", icon: ShoppingCart },
+      { label: "Dispatch", to: "/fg-dispatches", icon: Truck },
+    ],
+  },
   {
     label: "Admin",
     items: [
       { label: "Products", to: "/products", icon: Package },
       { label: "Lines", to: "/lines", icon: Factory },
       { label: "Machines", to: "/machines", icon: Wrench },
+      { label: "Warehouses", to: "/warehouses", icon: WarehouseIcon },
       { label: "HR Teams", to: "/hr-teams", icon: Users2 },
       { label: "Users", to: "/users", icon: UserCog, roles: ["Admin"] },
     ],

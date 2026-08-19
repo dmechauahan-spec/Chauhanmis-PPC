@@ -632,6 +632,13 @@ export interface SkuExplosionResult {
 
 // ---- Products (Module 1) — for the create-order SKU picker ----
 
+// FG Module Part 1 — plywood-specific attributes, all optional (most
+// products in this system aren't plywood). thickness/sheetLength/sheetWidth
+// are Decimal columns, NOT Number()-converted server-side (products.service.ts
+// returns the row as-is) — same serialize-as-string pattern as taktTimeSec
+// below. plywoodGrade is a plain enum column, not a Decimal.
+export type PlywoodGrade = "MR" | "BWR" | "BWP" | "Other";
+
 export interface Product {
   modelId: string;
   modelName: string;
@@ -648,6 +655,10 @@ export interface Product {
   notes: string | null;
   createdAt: string;
   updatedAt: string;
+  plywoodGrade: PlywoodGrade | null;
+  thickness: string | null;
+  sheetLength: string | null;
+  sheetWidth: string | null;
 }
 
 export interface CreateProductPayload {
@@ -660,6 +671,10 @@ export interface CreateProductPayload {
   noOfStations: number;
   changeoverTimeMin?: number;
   notes?: string;
+  plywoodGrade?: PlywoodGrade;
+  thickness?: number;
+  sheetLength?: number;
+  sheetWidth?: number;
 }
 
 export interface UpdateProductPayload {
@@ -671,6 +686,10 @@ export interface UpdateProductPayload {
   noOfStations?: number;
   changeoverTimeMin?: number | null;
   notes?: string | null;
+  plywoodGrade?: PlywoodGrade | null;
+  thickness?: number | null;
+  sheetLength?: number | null;
+  sheetWidth?: number | null;
 }
 
 // ---- Lines (Module 1) — for the schedule table's line filter ----
@@ -1334,4 +1353,402 @@ export interface OrderStatusDashboardRow {
   balanceQty: number;
   expectedCompletionDate: string | null;
   statusBadge: OrderStatusDashboardBadge;
+}
+
+// ==========================================================================
+// FG Module (Finished Goods) — a separate 5-part module on top of the 14
+// modules + Client Flow addition above. Built for the plywood
+// manufacturing client's requirement: QC-passed production becomes
+// traceable, warehouse-located, reservable, dispatch-eligible stock — never
+// a manually-entered quantity. See ppc-backend README "FG Module Part 1"
+// through "FG Module Part 5".
+// ==========================================================================
+
+// ---- Warehouses (FG Module Part 1) — GET/POST/PATCH/DELETE /api/warehouses ----
+
+export interface Warehouse {
+  id: number;
+  warehouseId: string;
+  warehouseName: string;
+  location: string | null;
+  isActive: boolean;
+}
+
+export interface CreateWarehousePayload {
+  warehouseId: string;
+  warehouseName: string;
+  location?: string;
+  isActive?: boolean;
+}
+
+export interface UpdateWarehousePayload {
+  warehouseName?: string;
+  location?: string | null;
+  isActive?: boolean;
+}
+
+// ---- FG Batches (FG Module Part 1/2/3/4) — /api/fg-batches ----
+
+export type FgQcStatus = "Pending" | "Pass" | "Fail" | "Hold";
+export type FgStockStatus = "Available" | "Reserved" | "Hold";
+export type FgDispatchStatus = "NotReady" | "Ready" | "Partial" | "Dispatched";
+
+// fgBatch.service.ts#toOutput explicitly Number()s every quantity field
+// server-side (unlike Product/OrderSchedule's raw Decimal fields elsewhere
+// in this file) — these arrive as real numbers, not numeric strings.
+// availableQty is NEVER a stored column on the backend — always computed as
+// qcPassedQty - reservedQty - dispatchedQty at read time — but it's a plain
+// field on the wire here, same as every other quantity.
+export interface FgBatch {
+  id: number;
+  fgBatchNo: string;
+  productionOrderId: string;
+  qcInspectionId: number;
+  customer: string | null;
+  productName: string;
+  sku: string;
+  plywoodGrade: PlywoodGrade | null;
+  thickness: number | null;
+  sheetLength: number | null;
+  sheetWidth: number | null;
+  productionDate: string;
+  producedQty: number;
+  qcPassedQty: number;
+  reworkQty: number;
+  rejectedQty: number;
+  qcStatus: FgQcStatus;
+  warehouseId: string | null;
+  rackBinLocation: string | null;
+  reservedQty: number;
+  dispatchedQty: number;
+  availableQty: number;
+  stockStatus: FgStockStatus;
+  dispatchStatus: FgDispatchStatus;
+  createdBy: string;
+  createdAt: string;
+}
+
+// GET /api/fg-batches/:fgBatchNo — the linked order + QC inspection's basic
+// info inlined (a small hand-picked subset of each, not the full row — see
+// fgBatch.service.ts's includeLinked), so the detail view doesn't need two
+// extra round trips for the most commonly-needed context.
+export interface FgBatchDetail extends FgBatch {
+  order: {
+    orderId: string;
+    client: string;
+    sku: string;
+    product: string;
+    qty: number;
+    status: OrderStatus;
+    dueDate: string | null;
+  };
+  qcInspectionSummary: {
+    id: number;
+    inspectionDate: string;
+    producedQty: number;
+    passedQty: number;
+    rejectedQty: number;
+    reworkQty: number;
+    inspectorName: string;
+    qcStatus: QcInspectionStatus;
+  };
+}
+
+// POST /api/fg-batches/generate — the ONLY way an FgBatch row is ever
+// created. productionOrderId/customer/productName/sku are never accepted
+// (always derived from the QC inspection's own linked order) — see
+// ppc-backend README "FG Module Part 1".
+export interface GenerateFgBatchPayload {
+  qcInspectionId: number;
+  warehouseId?: string;
+  rackBinLocation?: string;
+  productionDate?: string;
+  plywoodGrade?: PlywoodGrade;
+  thickness?: number;
+  sheetLength?: number;
+  sheetWidth?: number;
+}
+
+// GET /api/fg-batches/dispatch-eligible — DispatchEligibleFgBatchOutput.
+// reservedForSalesOrderQty is 0 when no salesOrderId query param was given,
+// or the batch carries no Active reservation for it — see
+// fgBatch.service.ts#listDispatchEligibleFgBatches. salesOrderId here is a
+// read-side SORT preference (reserved-for-this-SO batches surface first),
+// never a filter — every eligible batch is always present in the result.
+export interface DispatchEligibleFgBatch extends FgBatch {
+  reservedForSalesOrderQty: number;
+}
+
+export type FgMovementType =
+  | "BatchCreated"
+  | "WarehouseTransfer"
+  | "Reserved"
+  | "Unreserved"
+  | "Dispatched"
+  | "Held"
+  | "HoldReleased"
+  | "Adjustment";
+
+// GET /api/fg-batches/:fgBatchNo/movements — the audit ledger, oldest first.
+// quantity is null for movement types that don't involve one (Held/
+// HoldReleased); fromLocation/toLocation are human-readable point-in-time
+// snapshots (see formatFgLocation in fgStockMovement.service.ts), not a
+// live warehouse lookup — still correct even if the Warehouse record is
+// later renamed/deleted.
+export interface FgMovement {
+  id: number;
+  fgBatchId: number;
+  movementType: FgMovementType;
+  quantity: number | null;
+  fromLocation: string | null;
+  toLocation: string | null;
+  performedBy: string;
+  notes: string | null;
+  createdAt: string;
+}
+
+export interface TransferFgBatchPayload {
+  warehouseId: string;
+  /** Omitted clears the batch's existing bin rather than carrying it over — see ppc-backend README "FG Module Part 2". */
+  rackBinLocation?: string;
+  notes?: string;
+}
+
+export interface HoldFgBatchPayload {
+  notes?: string;
+}
+
+export interface ReserveFgBatchPayload {
+  salesOrderId: number;
+  qty: number;
+}
+
+// ---- Sales Orders + Reservations (FG Module Part 3) — /api/sales-orders, /api/fg-reservations ----
+
+export type SalesOrderStatus =
+  | "Open"
+  | "PartiallyReserved"
+  | "FullyReserved"
+  | "PartiallyDispatched"
+  | "Dispatched"
+  | "Closed";
+
+// salesOrders.service.ts returns the raw prisma row — orderedQty is a
+// Decimal column NOT Number()-converted server-side, so it arrives as a
+// numeric string over JSON, same pattern as Product/OrderSchedule above.
+export interface SalesOrder {
+  id: number;
+  salesOrderNo: string;
+  customer: string;
+  sku: string;
+  orderedQty: string;
+  status: SalesOrderStatus;
+  dueDate: string | null;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface CreateSalesOrderPayload {
+  salesOrderNo: string;
+  customer: string;
+  sku: string;
+  orderedQty: number;
+  dueDate?: string;
+}
+
+export interface UpdateSalesOrderPayload {
+  customer?: string;
+  sku?: string;
+  orderedQty?: number;
+  dueDate?: string | null;
+}
+
+export type FgReservationStatus = "Active" | "Cancelled" | "Fulfilled";
+
+// fgReservation.service.ts#toReservationOutput explicitly Number()s
+// reservedQty — a real number, not a Decimal string, unlike SalesOrder's
+// orderedQty above.
+export interface FgReservation {
+  id: number;
+  fgBatchId: number;
+  salesOrderId: number;
+  reservedQty: number;
+  status: FgReservationStatus;
+  reservedBy: string;
+  reservedAt: string;
+}
+
+// ---- FG Dispatch (FG Module Part 4) — /api/fg-dispatches ----
+
+// Resolved to the batch's key info inline (fgBatchNo/sku/productName) so
+// the UI doesn't need a second lookup per line item.
+export interface FgDispatchLineItem {
+  id: number;
+  fgBatchId: number;
+  fgBatchNo: string;
+  sku: string;
+  productName: string;
+  quantity: number;
+}
+
+export interface FgDispatch {
+  id: number;
+  dispatchNo: string;
+  salesOrderId: number | null;
+  dispatchDate: string;
+  dispatchedBy: string;
+  notes: string | null;
+  createdAt: string;
+  lineItems: FgDispatchLineItem[];
+}
+
+export interface CreateDispatchLineItemInput {
+  fgBatchId: number;
+  quantity: number;
+}
+
+export interface CreateDispatchPayload {
+  /** Optional — omit for general/unaffiliated stock movement. */
+  salesOrderId?: number;
+  lineItems: CreateDispatchLineItemInput[];
+  notes?: string;
+}
+
+// ---- FG Dashboard + Traceability (FG Module Part 5, final part) — GET
+// /api/fg-dashboard, GET /api/fg-batches/:fgBatchNo/trace ----
+//
+// Both endpoints are pure composition — every figure/section is read or
+// reused from Parts 1-4's own tables, nothing independently recomputed. See
+// ppc-backend README "FG Module Part 5".
+
+export interface FgDashboardWarehouseStockRow {
+  warehouseId: string | null;
+  availableQty: number;
+  reservedQty: number;
+  dispatchedQty: number;
+}
+
+export interface FgDashboardProductGradeStockRow {
+  sku: string;
+  plywoodGrade: PlywoodGrade | null;
+  availableQty: number;
+  reservedQty: number;
+  dispatchedQty: number;
+}
+
+export interface FgDashboardSummary {
+  totalFgStock: number;
+  todaysFgProduction: number;
+  qcPending: number;
+  qcPassed: number;
+  /** Count of batches with stockStatus = Hold (Part 2's inventory hold) — NOT qcStatus = Hold, a separate, currently-unreachable axis. */
+  qcHold: number;
+  rejected: number;
+  rework: number;
+  reservedStock: number;
+  dispatchReady: number;
+  /** Summed from FgDispatch/FgDispatchLineItem within the date range — never fg_batches.dispatchedQty directly (that field is all-time cumulative). */
+  dispatchedQuantity: number;
+  warehouseWiseStock: FgDashboardWarehouseStockRow[];
+  productGradeWiseStock: FgDashboardProductGradeStockRow[];
+}
+
+// GET /api/fg-batches/:fgBatchNo/trace — the client's exact requested
+// chain: FG Batch -> Production -> BOM/Product -> QC -> Warehouse ->
+// Reservation -> Dispatch.
+export interface FgBatchTraceSchedule {
+  lineId: string | null;
+  lineName: string | null;
+  dailyOutput: number | null;
+  workersPresent: number | null;
+  workersRequired: number | null;
+  shiftMode: string | null;
+  daysNeeded: number | null;
+  startDate: string | null;
+  estEndDate: string | null;
+  dueDate: string | null;
+  slackDays: number | null;
+  status: ScheduleStatusLabel;
+}
+
+export interface FgBatchTraceProduction {
+  order: {
+    orderId: string;
+    client: string;
+    sku: string;
+    product: string;
+    qty: number;
+    priority: OrderPriority;
+    status: OrderStatus;
+    dueDate: string | null;
+    createdAt: string;
+  };
+  /** Module 10's schedule for this production order, if it was ever scheduled — null otherwise. */
+  schedule: FgBatchTraceSchedule | null;
+}
+
+export interface FgBatchTraceBomLine {
+  id: number;
+  uom: BomUom;
+  partName: string;
+  qtyPerUnit: number;
+  partId: string | null;
+}
+
+export interface FgBatchTraceProduct {
+  modelId: string;
+  modelName: string;
+  productType: string;
+  sku: string;
+  plywoodGrade: PlywoodGrade | null;
+  thickness: number | null;
+  sheetLength: number | null;
+  sheetWidth: number | null;
+  /** Module 1's STATIC bom_components list — not a live Module 5 re-explosion (see ppc-backend README "FG Module Part 5"). */
+  bom: FgBatchTraceBomLine[];
+}
+
+export interface FgBatchTraceReservation {
+  id: number;
+  reservedQty: number;
+  status: FgReservationStatus;
+  reservedBy: string;
+  reservedAt: string;
+  salesOrder: {
+    id: number;
+    salesOrderNo: string;
+    customer: string;
+    sku: string;
+    orderedQty: number;
+    status: SalesOrderStatus;
+    dueDate: string | null;
+  };
+}
+
+export interface FgBatchTraceDispatch {
+  id: number;
+  quantity: number;
+  dispatch: {
+    id: number;
+    dispatchNo: string;
+    salesOrderId: number | null;
+    dispatchDate: string;
+    dispatchedBy: string;
+    notes: string | null;
+    createdAt: string;
+  };
+}
+
+export interface FgBatchTrace {
+  fgBatch: FgBatchDetail;
+  production: FgBatchTraceProduction;
+  /** Null only in the defensive, should-never-happen edge case where the batch's own sku no longer resolves to a Product row. */
+  product: FgBatchTraceProduct | null;
+  qc: QcInspection;
+  /** Part 2's full movement ledger for this batch, oldest first. */
+  warehouseHistory: FgMovement[];
+  /** Every reservation (Active and historical) against this batch, each with its Sales Order. */
+  reservations: FgBatchTraceReservation[];
+  /** Every dispatch line item that drew from this batch, each with its parent dispatch. */
+  dispatches: FgBatchTraceDispatch[];
 }
