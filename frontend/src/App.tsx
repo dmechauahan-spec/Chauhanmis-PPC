@@ -38,6 +38,9 @@ import { RiskPage } from "@/features/risk/risk-page";
 import { WarehousesPage } from "@/features/warehouses/warehouses-page";
 import { FgBatchesListPage } from "@/features/fg-batches/fg-batches-list-page";
 import { FgBatchDetailPage } from "@/features/fg-batches/fg-batch-detail-page";
+import { SalesOrdersListPage } from "@/features/sales-orders/sales-orders-list-page";
+import { CreateSalesOrderPage } from "@/features/sales-orders/create-sales-order-page";
+import { SalesOrderDetailPage } from "@/features/sales-orders/sales-order-detail-page";
 
 // Every route below /-that-isn't-/login renders inside AppShell (rail + top
 // bar) behind ProtectedRoute. As of Phase 11, every module from the
@@ -100,6 +103,9 @@ export default function App() {
         <Route path="/warehouses" element={<WarehousesPage />} />
         <Route path="/fg-batches" element={<FgBatchesListPage />} />
         <Route path="/fg-batches/:fgBatchNo" element={<FgBatchDetailPage />} />
+        <Route path="/sales-orders" element={<SalesOrdersListPage />} />
+        <Route path="/sales-orders/new" element={<CreateSalesOrderPage />} />
+        <Route path="/sales-orders/:salesOrderNo" element={<SalesOrderDetailPage />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />

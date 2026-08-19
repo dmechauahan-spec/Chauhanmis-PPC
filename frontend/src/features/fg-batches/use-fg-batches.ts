@@ -213,15 +213,32 @@ export function useReserveFgBatch(fgBatchNo: string) {
 // feature already owns the read side of (via the trace panel) — same
 // reasoning ppc-backend's own reserveFgBatch/cancelReservation split
 // documents. fgBatchNo/salesOrderNo are passed through purely so this
-// mutation knows exactly what to invalidate — the backend endpoint itself
-// only takes the reservation id.
+// mutation knows what to invalidate — the backend endpoint itself only
+// takes the reservation id. fgBatchNo is OPTIONAL: the Sales Order detail
+// page's own Reservations view only has each reservation's bare fgBatchId
+// (no backend endpoint resolves a numeric fgBatchId back to its fgBatchNo
+// string — GET /fg-batches is only addressable by fgBatchNo, not id), so a
+// cancel reached from THAT page can't target a specific batch's cache
+// entries precisely and falls back to invalidating the whole fg-batches
+// namespace instead — still correct, just less targeted than the FG Batch
+// detail page's own Reservations panel (which does have fgBatchNo).
 export function useCancelReservation() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id }: { id: number; fgBatchNo: string; salesOrderNo: string }) => {
+    mutationFn: async ({ id }: { id: number; fgBatchNo?: string; salesOrderNo: string }) => {
       const res = await apiClient.post<ApiSuccess<FgReservation>>(`/fg-reservations/${id}/cancel`);
       return res.data.data;
     },
-    onSuccess: (_data, variables) => invalidateBatchWrite(queryClient, variables.fgBatchNo, variables.salesOrderNo),
+    onSuccess: (_data, variables) => {
+      if (variables.fgBatchNo) {
+        invalidateBatchWrite(queryClient, variables.fgBatchNo, variables.salesOrderNo);
+      } else {
+        queryClient.invalidateQueries({ queryKey: fgBatchesKeys.all });
+        queryClient.invalidateQueries({ queryKey: fgDashboardKeys.all });
+        queryClient.invalidateQueries({ queryKey: salesOrdersKeys.detail(variables.salesOrderNo) });
+        queryClient.invalidateQueries({ queryKey: salesOrdersKeys.reservations(variables.salesOrderNo) });
+        queryClient.invalidateQueries({ queryKey: salesOrdersKeys.lists() });
+      }
+    },
   });
 }

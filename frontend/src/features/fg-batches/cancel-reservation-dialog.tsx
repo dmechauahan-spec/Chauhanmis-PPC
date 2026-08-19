@@ -17,7 +17,8 @@ import { formatNumber } from "@/lib/format";
 
 interface CancelReservationDialogProps {
   reservationId: number;
-  fgBatchNo: string;
+  /** Omit when the caller only has the reservation's bare fgBatchId (e.g. the Sales Order detail page) — see use-fg-batches.ts's useCancelReservation. */
+  fgBatchNo?: string;
   salesOrderNo: string;
   reservedQty: number;
   trigger?: React.ReactNode;
@@ -47,8 +48,9 @@ export function CancelReservationDialog({ reservationId, fgBatchNo, salesOrderNo
             Cancel this reservation?
           </AlertDialogTitle>
           <AlertDialogDescription>
-            Releases {formatNumber(reservedQty)} back to <span className="font-mono">{fgBatchNo}</span>&apos;s
-            available stock, freeing it for any Sales Order. This cannot be undone — reserve again if needed.
+            Releases {formatNumber(reservedQty)} back to{" "}
+            {fgBatchNo ? <span className="font-mono">{fgBatchNo}</span> : "the FG batch"}&apos;s available stock,
+            freeing it for any Sales Order. This cannot be undone — reserve again if needed.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {mutation.isError && <p className="text-xs text-status-critical">{apiErrorMessage(mutation.error)}</p>}
