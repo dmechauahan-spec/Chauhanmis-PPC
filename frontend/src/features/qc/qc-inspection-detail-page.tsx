@@ -1,18 +1,31 @@
 import { useParams, Link } from "react-router";
-import { ArrowLeft, TriangleAlert } from "lucide-react";
+import { ArrowLeft, TriangleAlert, PackagePlus, PackageCheck } from "lucide-react";
 import { useQcInspection } from "./use-qc-inspections";
 import { QcStatusBadge } from "./qc-status-badge";
 import { useOrder } from "@/features/orders/use-orders";
+import { useProductsForPicker } from "@/features/orders/use-products";
 import { useDailyLog } from "@/features/daily-logs/use-daily-logs";
+import { useFgBatchForInspection } from "@/features/fg-batches/use-fg-batches";
+import { GenerateFgBatchDialog } from "@/features/fg-batches/generate-fg-batch-dialog";
 import { OrderStatusBadge } from "@/features/orders/order-badges";
+import { useAuth } from "@/features/auth/auth-context";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { apiErrorMessage } from "@/lib/api-client";
 import { formatDate, formatDateTime, formatDecimal } from "@/lib/format";
+import type { QcInspection } from "@/types/api";
+
+// FG Module Part 1 — batch CREATION is production-side, same domain as QC
+// Inspections themselves (see ppc-backend config/permissions.ts's fgBatch
+// entry, verified against the actual file — write: PRODUCTION_ONLY, which
+// authorize() also lets Admin through regardless of the roles listed).
+const CAN_GENERATE_ROLES = new Set(["Admin", "ProductionManager"]);
 
 export function QcInspectionDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const { user } = useAuth();
   const { data: inspection, isPending, isError, error } = useQcInspection(id);
 
   if (isPending) {
@@ -72,6 +85,12 @@ export function QcInspectionDetailPage() {
         <Field label="Inspector" value={inspection.inspectorName} />
       </div>
 
+      {inspection.passedQty > 0 && (
+        <div className="mb-5">
+          <FgBatchPanel inspection={inspection} canGenerate={!!user && CAN_GENERATE_ROLES.has(user.role)} />
+        </div>
+      )}
+
       {inspection.remarks && (
         <Card className="mb-5">
           <CardHeader>
@@ -88,6 +107,53 @@ export function QcInspectionDetailPage() {
         <LinkedDailyLogCard dailyLogId={inspection.dailyLogId} />
       </div>
     </div>
+  );
+}
+
+// FG Module Part 1 — "if passedQty > 0 and this inspection hasn't already
+// been converted, show a Generate FG Batch action; if already converted,
+// show a link to the existing batch instead." There's no direct backend
+// filter for "does this inspection already have a batch" (see
+// use-fg-batches.ts's useFgBatchForInspection for why), so this resolves
+// the order first (for both the check and the product-defaults prefill).
+function FgBatchPanel({ inspection, canGenerate }: { inspection: QcInspection; canGenerate: boolean }) {
+  const { data: order } = useOrder(inspection.orderId);
+  const { data: products } = useProductsForPicker("");
+  const product = products?.find((p) => p.sku === order?.sku);
+  const { data: existingBatch, isPending } = useFgBatchForInspection(inspection.orderId, inspection.id);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Finished Goods Batch</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isPending ? (
+          <Skeleton className="h-9 w-56" />
+        ) : existingBatch ? (
+          <div className="flex items-center gap-2">
+            <PackageCheck className="size-4 text-status-success" />
+            <span className="text-sm text-ink-muted">Already converted to</span>
+            <Link to={`/fg-batches/${existingBatch.fgBatchNo}`} className="font-mono text-signal-amber hover:underline">
+              {existingBatch.fgBatchNo}
+            </Link>
+          </div>
+        ) : canGenerate ? (
+          <GenerateFgBatchDialog
+            inspection={inspection}
+            product={product}
+            trigger={
+              <Button>
+                <PackagePlus />
+                Generate FG Batch
+              </Button>
+            }
+          />
+        ) : (
+          <p className="text-sm text-ink-faint">Not yet converted to an FG batch.</p>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

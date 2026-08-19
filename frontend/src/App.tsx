@@ -36,6 +36,8 @@ import { UsersPage } from "@/features/admin/users-page";
 import { OeePage } from "@/features/oee/oee-page";
 import { RiskPage } from "@/features/risk/risk-page";
 import { WarehousesPage } from "@/features/warehouses/warehouses-page";
+import { FgBatchesListPage } from "@/features/fg-batches/fg-batches-list-page";
+import { FgBatchDetailPage } from "@/features/fg-batches/fg-batch-detail-page";
 
 // Every route below /-that-isn't-/login renders inside AppShell (rail + top
 // bar) behind ProtectedRoute. As of Phase 11, every module from the
@@ -96,6 +98,8 @@ export default function App() {
         <Route path="/hr-teams" element={<HrTeamsPage />} />
         <Route path="/users" element={<UsersPage />} />
         <Route path="/warehouses" element={<WarehousesPage />} />
+        <Route path="/fg-batches" element={<FgBatchesListPage />} />
+        <Route path="/fg-batches/:fgBatchNo" element={<FgBatchDetailPage />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />
