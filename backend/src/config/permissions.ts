@@ -79,4 +79,9 @@ export const PERMISSIONS = {
   // actions (fgStockMovements/fgReservations) — see README "FG Module
   // Part 4".
   fgDispatches: { read: STORE_AND_PRODUCTION, write: STORE_ONLY },
+  // FG Module Part 5 (final part) — the FG summary dashboard and per-batch
+  // traceability view. Read-only module, same shape as `dashboard`/
+  // `orderStatusDashboard` — write unused (no write routes exist). See
+  // README "FG Module Part 5".
+  fgDashboard: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY },
 } as const;

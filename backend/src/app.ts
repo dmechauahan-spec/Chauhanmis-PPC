@@ -34,6 +34,7 @@ import fgBatchRouter from './modules/fgBatch/fgBatch.routes';
 import fgReservationRouter from './modules/fgBatch/fgReservation.routes';
 import salesOrdersRouter from './modules/salesOrders/salesOrders.routes';
 import fgDispatchRouter from './modules/fgDispatch/fgDispatch.routes';
+import fgDashboardRouter, { fgBatchTraceRouter } from './modules/fgDashboard/fgDashboard.routes';
 import authRouter from './modules/auth/auth.routes';
 
 installBigIntJsonSupport();
@@ -88,6 +89,12 @@ export function createApp(): Express {
   app.use('/api/fg-reservations', fgReservationRouter);
   app.use('/api/sales-orders', salesOrdersRouter);
   app.use('/api/fg-dispatches', fgDispatchRouter);
+  // FG Module Part 5 (final part). fgBatchTraceRouter is a SECOND router
+  // mounted at the same base path as fgBatchRouter above (see
+  // fgDashboard.routes.ts's own comment) — /:fgBatchNo/trace never collides
+  // with fgBatchRouter's own single-segment /:fgBatchNo.
+  app.use('/api/fg-dashboard', fgDashboardRouter);
+  app.use('/api/fg-batches', fgBatchTraceRouter);
   app.use('/api/auth', authRouter);
 
   app.use(notFoundHandler);

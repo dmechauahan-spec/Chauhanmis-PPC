@@ -61,6 +61,7 @@ tags:
   - name: FG Batches
   - name: Sales Orders
   - name: FG Dispatches
+  - name: FG Dashboard
 
 components:
   securitySchemes:
@@ -1419,6 +1420,173 @@ components:
         sku: { type: string }
         productName: { type: string }
         quantity: { type: number }
+
+    FgDashboardSummary:
+      type: object
+      description: >
+        FG Module Part 5 (final part). Every figure is composed from Parts 1-4's own tables —
+        see README "FG Module Part 5" for the full field-by-field source table.
+      properties:
+        totalFgStock: { type: number, description: SUM(availableQty) across batches where dispatchStatus != Dispatched. }
+        todaysFgProduction: { type: number, description: SUM(qcPassedQty) where productionDate falls in the given range (default today). }
+        qcPending: { type: integer, description: COUNT of batches where qcStatus = Pending. }
+        qcPassed: { type: integer, description: COUNT of batches where qcStatus = Pass. }
+        qcHold: { type: integer, description: 'COUNT of batches where stockStatus = Hold (Part 2''s inventory hold) -- NOT qcStatus = Hold, a separate, currently-unreachable axis. See README.' }
+        rejected: { type: number, description: SUM(rejectedQty) across all batches. }
+        rework: { type: number, description: SUM(reworkQty) across all batches. }
+        reservedStock: { type: number, description: SUM(reservedQty) across all batches. }
+        dispatchReady: { type: integer, description: COUNT of batches where dispatchStatus IN (Ready, Partial). }
+        dispatchedQuantity: { type: number, description: SUM(FgDispatchLineItem.quantity) joined to FgDispatch.dispatchDate in the given range -- never fg_batches.dispatchedQty directly. }
+        warehouseWiseStock:
+          type: array
+          items:
+            type: object
+            properties:
+              warehouseId: { type: string, nullable: true }
+              availableQty: { type: number }
+              reservedQty: { type: number }
+              dispatchedQty: { type: number }
+        productGradeWiseStock:
+          type: array
+          items:
+            type: object
+            properties:
+              sku: { type: string }
+              plywoodGrade: { type: string, nullable: true }
+              availableQty: { type: number }
+              reservedQty: { type: number }
+              dispatchedQty: { type: number }
+
+    FgBatchTrace:
+      type: object
+      readOnly: true
+      description: >
+        FG Module Part 5 (final part). The client's exact requested chain: FG Batch -> Production
+        -> BOM/Product -> QC -> Warehouse -> Reservation -> Dispatch. Read-heavy composition only
+        -- every section is a direct read or a call into an existing Part 1-4 service function.
+        See README "FG Module Part 5".
+      properties:
+        fgBatch: { $ref: '#/components/schemas/FgBatch' }
+        production:
+          type: object
+          properties:
+            order:
+              type: object
+              description: The linked production Order (Module 2) directly.
+              properties:
+                orderId: { type: string }
+                client: { type: string }
+                sku: { type: string }
+                product: { type: string }
+                qty: { type: integer }
+                priority: { type: string }
+                status: { type: string }
+                dueDate: { type: string, format: date, nullable: true }
+                createdAt: { type: string, format: date-time }
+            schedule:
+              type: object
+              nullable: true
+              description: Module 10's ProductionSchedule for this order, if it was ever scheduled -- null otherwise.
+              properties:
+                lineId: { type: string, nullable: true }
+                lineName: { type: string, nullable: true }
+                dailyOutput: { type: number, nullable: true }
+                workersPresent: { type: integer, nullable: true }
+                workersRequired: { type: integer, nullable: true }
+                shiftMode: { type: string, nullable: true }
+                daysNeeded: { type: number, nullable: true }
+                startDate: { type: string, format: date, nullable: true }
+                estEndDate: { type: string, format: date, nullable: true }
+                dueDate: { type: string, format: date, nullable: true }
+                slackDays: { type: integer, nullable: true }
+                status: { type: string }
+        product:
+          type: object
+          nullable: true
+          description: >
+            Null only in the defensive, should-never-happen edge case where the batch's own sku no
+            longer resolves to a Product row (see README). bom is Module 1's STATIC
+            bom_components list for this sku, not a live Module 5 re-explosion.
+          properties:
+            modelId: { type: string }
+            modelName: { type: string }
+            productType: { type: string }
+            sku: { type: string }
+            plywoodGrade: { type: string, nullable: true, enum: [MR, BWR, BWP, Other] }
+            thickness: { type: number, nullable: true }
+            sheetLength: { type: number, nullable: true }
+            sheetWidth: { type: number, nullable: true }
+            bom:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: integer }
+                  uom: { type: string }
+                  partName: { type: string }
+                  qtyPerUnit: { type: number }
+                  partId: { type: string, nullable: true }
+        qc:
+          description: The exact QC Inspection (Client Flow Part 3) this batch was generated from — Part 3's own getQcInspectionById, reused as-is.
+          allOf:
+            - type: object
+              properties:
+                id: { type: integer }
+                orderId: { type: string }
+                inspectionDate: { type: string, format: date }
+                producedQty: { type: number }
+                sampleQty: { type: number, nullable: true }
+                passedQty: { type: number }
+                rejectedQty: { type: number }
+                reworkQty: { type: number }
+                defectType: { type: string, nullable: true }
+                qcStatus: { type: string }
+                remarks: { type: string, nullable: true }
+                inspectorName: { type: string }
+                createdAt: { type: string, format: date-time }
+        warehouseHistory:
+          type: array
+          description: Part 2's full movement ledger for this batch, oldest first (getFgMovements, reused as-is).
+          items: { $ref: '#/components/schemas/FgStockMovement' }
+        reservations:
+          type: array
+          description: Every FgReservation (Active and historical) against this batch, each with its SalesOrder.
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              reservedQty: { type: number }
+              status: { type: string, enum: [Active, Cancelled, Fulfilled] }
+              reservedBy: { type: string }
+              reservedAt: { type: string, format: date-time }
+              salesOrder:
+                type: object
+                properties:
+                  id: { type: integer }
+                  salesOrderNo: { type: string }
+                  customer: { type: string }
+                  sku: { type: string }
+                  orderedQty: { type: number }
+                  status: { type: string }
+                  dueDate: { type: string, format: date, nullable: true }
+        dispatches:
+          type: array
+          description: Every FgDispatchLineItem that drew from this batch, each with its parent FgDispatch.
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              quantity: { type: number }
+              dispatch:
+                type: object
+                properties:
+                  id: { type: integer }
+                  dispatchNo: { type: string }
+                  salesOrderId: { type: integer, nullable: true }
+                  dispatchDate: { type: string, format: date }
+                  dispatchedBy: { type: string }
+                  notes: { type: string, nullable: true }
+                  createdAt: { type: string, format: date-time }
 
 paths:
   /auth/login:
@@ -3972,3 +4140,55 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/FgDispatch' }
         '404': { description: Not found }
+
+  /fg-dashboard:
+    get:
+      tags: [FG Dashboard]
+      summary: FG summary dashboard — composition only, no new quantity-derivation logic
+      description: >
+        FG Module Part 5 (final part). dateFrom/dateTo are BOTH optional and scope exactly two
+        figures (todaysFgProduction, dispatchedQuantity) — every other figure is a current-state
+        snapshot regardless. totalFgStock/warehouseWiseStock/productGradeWiseStock are derived by
+        fetching every batch's raw quantity columns once and computing availableQty via Part 1's
+        computeAvailableQty (Prisma's groupBy can't express that cross-column expression
+        directly). dispatchedQuantity is summed from FgDispatchLineItem/FgDispatch, never from
+        fg_batches.dispatchedQty (an all-time cumulative total with no date of its own). See
+        README "FG Module Part 5" for the full field-by-field source table.
+      parameters:
+        - name: dateFrom
+          in: query
+          schema: { type: string, format: date }
+        - name: dateTo
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: FgDashboardSummary
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FgDashboardSummary' }
+        '400': { description: dateFrom after dateTo }
+
+  /fg-batches/{fgBatchNo}/trace:
+    parameters:
+      - name: fgBatchNo
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [FG Dashboard]
+      summary: 'Full per-batch traceability: FG Batch -> Production -> BOM/Product -> QC -> Warehouse -> Reservation -> Dispatch'
+      description: >
+        FG Module Part 5 (final part). Read-heavy, no new logic — every section is a direct read
+        or a call into an existing Part 1-4 service function. product.bom is Module 1's STATIC
+        bom_components list, NOT a live Module 5 BOM-explosion re-run — a traceability view only
+        needs to show what this batch was actually built from. Mounted via a SECOND router at the
+        same /fg-batches base path as the rest of FG Batches — see README "FG Module Part 5" for
+        why this lives in the fgDashboard module despite its URL.
+      responses:
+        '200':
+          description: FgBatchTrace
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FgBatchTrace' }
+        '404': { description: Unknown fgBatchNo }

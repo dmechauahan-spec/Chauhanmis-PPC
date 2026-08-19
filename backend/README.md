@@ -30,6 +30,15 @@ different, deliberately separate signals); Part 5's closing note maps every flow
 client's document to the part that addresses it. The frontend UI for any of this remains a
 separate, later phase — see the end of "Client Flow Part 5".
 
+Also complete: a **5-part FG Module (Finished Goods)** — a new, separate module for the plywood
+manufacturing client's own requirement that FG stock be transaction-based (never a manual quantity
+entry) and fully linked across Production/QC/Sales Order/Warehouse/Dispatch. Warehouse + FG batch
+core, the stock-movement audit ledger with transfer/hold, Sales Order + partial reservation,
+dispatch, and finally a summary dashboard plus full per-batch traceability. **All 5 parts are
+complete** — see "FG Module Part 1" through "FG Module Part 5" below; Part 5's closing note maps
+the client's ten-point FG requirements document to the part that addresses each one. The frontend
+UI for this module is likewise a separate, later phase — see the end of "FG Module Part 5".
+
 > **⚠️ Known limitation you will hit immediately if you use search:** `GET /api/search`'s order
 > results always return `pendingQty: null` — there is no schema linkage between production output
 > and a specific order today, so this cannot be honestly computed. See "Module 12" below for the
@@ -2369,6 +2378,147 @@ every scenario that predates dispatch existing.
 
 **Permissions.** One **new** entry, `fgDispatches` (`read: STORE_AND_PRODUCTION`, `write:
 STORE_ONLY`) — the same inventory-side split as `fgStockMovements`/`fgReservations`/`salesOrders`.
+
+### FG Module Part 5 — Dashboard + Traceability (final part)
+
+**Part 5**, the final part of the 5-part FG Module. Two **composition-only** endpoints — no new
+business logic, same discipline as Module 14's `dashboard` and Client Flow Part 5's
+`orderStatusDashboard`: `GET /api/fg-dashboard` (a summary dashboard) and `GET
+/api/fg-batches/:fgBatchNo/trace` (the client's exact requested chain: **FG Batch → Production →
+BOM/Product → QC → Warehouse → Reservation → Dispatch**). `fgDashboard.service.ts` introduces no
+new quantity-derivation rule beyond straightforward `SUM`/`COUNT`/`GROUP BY` aggregation of data
+Parts 1–4 already produce correctly — every figure/section is read or reused from an existing
+table or an existing Part 1–4 service function.
+
+**`GET /api/fg-dashboard`.** `dateFrom`/`dateTo` are both **optional** (unlike Module 14's
+`dashboard`, where a range is mandatory) — they scope exactly two figures, `todaysFgProduction`
+and `dispatchedQuantity`; every other figure is a current-state snapshot regardless of what's
+given, per this part's own instructions.
+
+| Field                  | Source / rule                                                                 |
+| ----------------------- | ------------------------------------------------------------------------------- |
+| `totalFgStock`          | `SUM(availableQty)` across batches where `dispatchStatus != Dispatched`        |
+| `todaysFgProduction`    | `SUM(qcPassedQty)` where `productionDate` falls in the range (default: today)  |
+| `qcPending` / `qcPassed`| `COUNT` of batches by `qcStatus` (`Pending` / `Pass`)                          |
+| `qcHold`                | `COUNT` of batches where `stockStatus = Hold` — **not** `qcStatus = Hold`, a separate axis (Part 2's inventory hold vs. the batch's own QC state) — see note below |
+| `rejected` / `rework`   | `SUM(rejectedQty)` / `SUM(reworkQty)` across all batches (quantities, not counts) |
+| `reservedStock`         | `SUM(reservedQty)` across all batches                                          |
+| `dispatchReady`         | `COUNT` of batches where `dispatchStatus IN (Ready, Partial)`                  |
+| `dispatchedQuantity`    | `SUM(FgDispatchLineItem.quantity)` joined to `FgDispatch.dispatchDate` in the range |
+| `warehouseWiseStock`    | Grouped by `warehouseId` — `availableQty`/`reservedQty`/`dispatchedQty` per warehouse |
+| `productGradeWiseStock` | Grouped by `sku` + `plywoodGrade` — same three totals                          |
+
+**Why `qcHold` reads `stockStatus`, not `qcStatus`.** `FgQcStatus` *also* has a `Hold` value (a
+distinct concept — the batch's own QC state, settable today only via a direct DB edit, since no
+endpoint in Parts 1–4 ever sets it), which could plausibly be what "QC Hold" on a dashboard means.
+This part's own instructions are explicit: *"`qcHold`, ... grouped by the relevant status fields
+(`qcStatus`, `stockStatus = Hold`, ...)"* — read as "the figure literally named `qcHold` counts
+`stockStatus = Hold`", i.e. Part 2's real, reachable inventory-hold action (`PATCH
+/api/fg-batches/:fgBatchNo/hold`), not the theoretical, currently-unreachable `qcStatus = Hold`
+value. Named `qcHold` because that's the client's own dashboard label for "stock currently on
+hold," not because it reads the `qcStatus` column.
+
+**Why `totalFgStock`/`warehouseWiseStock`/`productGradeWiseStock` fetch batches into memory rather
+than a DB-level `groupBy`.** `availableQty` is never a stored column (Part 1's own design) —
+Prisma's `groupBy` can't express the computed cross-column expression
+`qcPassedQty - reservedQty - dispatchedQty` directly, so every batch's raw quantity columns are
+fetched **once** and every grouped figure is derived from that same in-memory pass, through Part
+1's own `computeAvailableQty` (never reimplemented). The same "small working set for a single
+factory, fetch then aggregate in application code" approach `listDispatchEligibleFgBatches` (Part
+4) already relies on for the identical reason.
+
+**Why `dispatchedQuantity` reads `FgDispatch`/`FgDispatchLineItem`, not `fg_batches.dispatchedQty`
+directly.** `fg_batches.dispatchedQty` is an **all-time cumulative** total with no date of its own
+— it can't honor a `dateFrom`/`dateTo` filter on its own. `dispatchedQuantity` instead sums
+`FgDispatchLineItem.quantity` joined to its parent `FgDispatch.dispatchDate`, which **does** carry
+a real date per event — the only way to correctly scope "how much shipped in this window," in or
+out of a range. (When no range is given, this sum still equals the same total `dispatchedQty`
+cumulative would show — just derived from the source-of-truth event table instead of the
+denormalized running total.)
+
+**`GET /api/fg-batches/:fgBatchNo/trace`.** Every section is a direct read or a call into an
+existing Part 1–4 service function:
+
+| Trace section       | Source                                                                          |
+| --------------------- | ---------------------------------------------------------------------------------- |
+| `fgBatch`              | Part 1's `getFgBatchByNo`, reused as-is — includes the computed `availableQty`.  |
+| `production.order`     | The linked `Order` row (Module 2) directly.                                     |
+| `production.schedule`  | Module 10's `ProductionSchedule` for that order, if it was ever scheduled — `null` otherwise. |
+| `product`              | The linked `Product` row (Module 1) plus its **static** `bom_components` list.  |
+| `qc`                   | Part 3's `getQcInspectionById`, reused as-is — the exact inspection this batch was generated from. |
+| `warehouseHistory`     | Part 2's `listFgMovements`, reused as-is (full ledger, oldest first).           |
+| `reservations`         | Every `FgReservation` (Active and historical) against this batch, each with its `SalesOrder` (Part 3). |
+| `dispatches`           | Every `FgDispatchLineItem` that drew from this batch, each with its parent `FgDispatch` (Part 4). |
+
+**The one judgment call: `product.bom` is the STATIC `bom_components` list (Module 1), not a live
+Module 5 BOM-explosion re-run.** A traceability *view* only needs to show what this batch's
+product is actually built from — the static component list is sufficient and strictly cheaper. A
+live explosion answers a different question ("what does producing N *more* of this need," resolving
+multi-level sub-assemblies into a fresh requirement tree) that doesn't apply to a single
+already-produced batch sitting in front of the viewer. `getBomByModelRef` (Module 1) is reused
+directly, not reimplemented; it's only skipped (falling back to `bom: []`) in the defensive,
+should-never-happen edge case where `product` itself resolves to `null` (see below) — calling it
+there would otherwise throw a `ValidationError` and take down an otherwise-healthy read.
+
+**`product: null` and `production.schedule: null` are both real, tested branches, not
+after-thoughts.** Every `FgBatch.sku` is copied from its production order's `Order.sku` at
+generation time (Part 1), and `Order.sku` carries a real DB-level FK to `Product.sku` with no
+cascade — so in practice every batch's `product` always resolves. `null` is kept as an explicit,
+handled case anyway (rather than an unchecked `findUniqueOrThrow`) purely as defense against a
+future direct-DB edit or an unrelated schema change loosening that FK, so this read-only view
+degrades gracefully instead of 500ing. `production.schedule: null` is the far more common real
+case — most FG batches' production orders were never run through Module 10's scheduler at all.
+
+**Why `GET /api/fg-batches/:fgBatchNo/trace` lives in `fgDashboard`, not `fgBatch`, despite its
+URL.** The folder/file layout this part's own instructions specify (`src/modules/fgDashboard/*`)
+groups Part 5's two composition-only endpoints together in one module, by *what they are*
+(read-only composition layers), not by which existing resource's URL they happen to extend. The
+route itself is still mounted at `/api/fg-batches/:fgBatchNo/trace` (a **second** `Router`,
+`fgBatchTraceRouter`, exported alongside the default summary router from
+`fgDashboard.routes.ts` and mounted at the SAME `/api/fg-batches` base path as `fgBatch.routes.ts`'s
+own router in `app.ts`) — Express matches whichever mounted router's routes fit the request path,
+and `/:fgBatchNo/trace` (two path segments) never collides with `fgBatch.routes.ts`'s own
+single-segment `/:fgBatchNo`, so the two routers coexist safely regardless of mount order.
+
+**Permissions.** One **new** entry, `fgDashboard` (`read: STORE_AND_PRODUCTION`, `write:
+ADMIN_ONLY`) — read-only module, same shape as `dashboard`/`orderStatusDashboard` (write unused,
+no write routes exist).
+
+---
+
+**This completes the 5-part FG Module.** A mapping from the client's original FG requirements
+document to what was actually built — written from what this backend was told across five
+separate prompts, **not** a literal quote of the client's own source document (this backend was
+never shown that document's exact text, only its concepts filtered through five separate prompts;
+phrasing it as a direct citation would overstate what's actually known here), same caveat Client
+Flow Part 5's own closing note makes for that addition:
+
+| # | FG spec requirement                                                          | Addressed by |
+| - | -------------------------------------------------------------------------------- | ---------------- |
+| 1 | FG stock must never be manual quantity entry — transaction-based, linked to Production/QC/Sales Order/Warehouse/Dispatch; only QC-passed qty becomes dispatch-eligible | **Part 1** — `POST /api/fg-batches/generate` is the ONLY way an `fg_batches` row is ever created, every field traced back to a real QC Inspection |
+| 2 | Warehouse-based stock location (bin-level)                                       | **Part 1**'s `Warehouse` master data + `rackBinLocation`; **Part 2**'s transfer action |
+| 3 | Plywood-specific product attributes (grade, thickness, sheet size)               | **Part 1**'s additions to `Product` and `FgBatch` |
+| 4 | Every stock movement logs date/user/quantity/source/destination                  | **Part 2**'s `FgStockMovement` audit ledger, written through the one shared `logFgMovement` |
+| 5 | Hold / release-hold a batch                                                      | **Part 2**'s `PATCH .../hold` and `.../release-hold` |
+| 6 | Stock reservable against a specific Sales Order, with partial-reservation support | **Part 3**'s `SalesOrder` + `FgReservation` |
+| 7 | Partial-fulfillment tracking (a Sales Order fulfilled by several batches over time) | **Part 3**'s `GET /api/sales-orders/:salesOrderNo/reservations` |
+| 8 | Dispatch: partial dispatch across several batches in one event, correctly updates stock/reservation/Sales-Order status | **Part 4**'s `FgDispatch`/`FgDispatchLineItem` + the reservation-vs-available netting order |
+| 9 | A summary dashboard (stock on hand, QC pending/passed/hold, rejected/rework, dispatch-ready, warehouse-wise and product/grade-wise stock) | **Part 5**'s `GET /api/fg-dashboard` (this section) |
+| 10 | Full batch traceability: FG Batch → Production → BOM/Product → QC → Warehouse → Reservation → Dispatch | **Part 5**'s `GET /api/fg-batches/:fgBatchNo/trace` (this section) |
+
+**Nothing from this ten-point list is left uncovered.** The two items worth flagging explicitly
+rather than silently treating as fully resolved: (a) `qcStatus = Hold` (item 5's *QC-side* hold,
+distinct from Part 2's *inventory-side* hold this module actually built) remains declared on
+`FgQcStatus` but unreachable by any endpoint in this module — see "FG Module Part 1"'s own comment
+on this — a real gap if the client's "Hold" language meant a QC-driven hold rather than a
+warehouse-driven one, worth confirming rather than assuming; (b) `fg_batches.sales_order_id` (item
+1's original "linked with... Sales Order" wording) is superseded, not wired up, by Part 3's real
+`FgReservation` join table — see "FG Module Part 3" — the requirement is still met, just through a
+different, more expressive mechanism than a single FK.
+
+The **frontend UI** for the FG Module — Parts 1 through 5 alike — is explicitly **out of scope**
+for this backend work and is a separate, later set of prompts, same as the Client Flow addition's
+own closing note.
 
 ## Assumptions
 
