@@ -47,7 +47,13 @@ export function ProductFormDialog({ product, trigger }: ProductFormDialogProps) 
       noOfStations: product?.noOfStations ?? 1,
       changeoverTimeMin: product?.changeoverTimeMin != null ? Number(product.changeoverTimeMin) : undefined,
       notes: product?.notes ?? "",
-      plywoodGrade: product?.plywoodGrade ?? undefined,
+      // "" not undefined — a Radix Select must stay controlled from the
+      // start (a value prop that's undefined on first render then a real
+      // string after the user picks something trips React's "component is
+      // changing from uncontrolled to controlled" warning). "" never
+      // matches a real PLYWOOD_GRADES entry, so the trigger still shows
+      // its placeholder exactly as undefined would have.
+      plywoodGrade: product?.plywoodGrade ?? "",
       thickness: product?.thickness != null ? Number(product.thickness) : undefined,
       sheetLength: product?.sheetLength != null ? Number(product.sheetLength) : undefined,
       sheetWidth: product?.sheetWidth != null ? Number(product.sheetWidth) : undefined,
@@ -203,7 +209,12 @@ export function ProductFormDialog({ product, trigger }: ProductFormDialogProps) 
                     control={control}
                     name="plywoodGrade"
                     render={({ field }) => (
-                      <Select value={field.value} onValueChange={field.onChange}>
+                      // field.value's static type is `unknown` here — z.preprocess
+                      // (see zod-helpers.ts's optionalFromEmptyString) can't
+                      // know its own input shape, only its output — the cast
+                      // reflects what buildDefaults()/onChange actually ever
+                      // put there (a PlywoodGrade or "").
+                      <Select value={(field.value as string | undefined) ?? ""} onValueChange={field.onChange}>
                         <SelectTrigger id="plywoodGrade">
                           <SelectValue placeholder="Not set" />
                         </SelectTrigger>

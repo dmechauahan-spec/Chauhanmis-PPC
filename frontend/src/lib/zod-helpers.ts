@@ -14,3 +14,17 @@ export function optionalCoercedNumber(inner: z.ZodNumber) {
     inner.optional(),
   );
 }
+
+// Same "blank must mean omit this field" problem as optionalCoercedNumber
+// above, for an optional enum/string field instead of a number — a
+// react-hook-form default of "" (not undefined) is what a controlled Radix
+// Select needs from its first render (an undefined value prop, later
+// becoming a real string once something's picked, trips React's
+// "component is changing from uncontrolled to controlled" warning — see
+// product-schema.ts's own plywoodGrade for where this was first found).
+// z.enum(...).optional() alone rejects "" outright (it's not a member of
+// the enum and not undefined), so this coerces "" to undefined before that
+// check ever runs.
+export function optionalFromEmptyString<T extends z.ZodTypeAny>(inner: T) {
+  return z.preprocess((val) => (val === "" ? undefined : val), inner.optional());
+}

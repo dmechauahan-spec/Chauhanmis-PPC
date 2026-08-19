@@ -102,7 +102,13 @@ export function FgDashboardPage() {
             <StatTile label="Dispatched Qty" value={formatNumber(data.dispatchedQuantity)} variant="success" sublabel={dateFrom || dateTo ? "Selected range" : "Today"} />
           </div>
 
-          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+          {/* Single column, not a 2-up grid: each table has 4-5 columns of
+              its own (warehouse/SKU + grade + three quantities) — a 2-up
+              split leaves each card too narrow to show all of them without
+              relying on Table's own internal horizontal scroll (which
+              works, but shouldn't be the default experience for a handful
+              of columns that fit comfortably at full width). */}
+          <div className="grid grid-cols-1 gap-5">
             <Card>
               <CardHeader>
                 <CardTitle>Warehouse-Wise Stock</CardTitle>
@@ -112,26 +118,28 @@ export function FgDashboardPage() {
                 {data.warehouseWiseStock.length === 0 ? (
                   <p className="text-sm text-ink-faint">No FG batches yet.</p>
                 ) : (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Warehouse</TableHead>
-                        <TableHead className="text-right">Available</TableHead>
-                        <TableHead className="text-right">Reserved</TableHead>
-                        <TableHead className="text-right">Dispatched</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {data.warehouseWiseStock.map((w) => (
-                        <TableRow key={w.warehouseId ?? "unassigned"}>
-                          <TableCell className="font-mono">{w.warehouseId ?? <span className="text-ink-faint italic">Unassigned</span>}</TableCell>
-                          <TableCell numeric className="text-signal-amber">{formatNumber(w.availableQty)}</TableCell>
-                          <TableCell numeric className="text-ink-muted">{formatNumber(w.reservedQty)}</TableCell>
-                          <TableCell numeric className="text-ink-muted">{formatNumber(w.dispatchedQty)}</TableCell>
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Warehouse</TableHead>
+                          <TableHead className="text-right">Available</TableHead>
+                          <TableHead className="text-right">Reserved</TableHead>
+                          <TableHead className="text-right">Dispatched</TableHead>
                         </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                      </TableHeader>
+                      <TableBody>
+                        {data.warehouseWiseStock.map((w) => (
+                          <TableRow key={w.warehouseId ?? "unassigned"}>
+                            <TableCell className="font-mono">{w.warehouseId ?? <span className="text-ink-faint italic">Unassigned</span>}</TableCell>
+                            <TableCell numeric className="text-signal-amber">{formatNumber(w.availableQty)}</TableCell>
+                            <TableCell numeric className="text-ink-muted">{formatNumber(w.reservedQty)}</TableCell>
+                            <TableCell numeric className="text-ink-muted">{formatNumber(w.dispatchedQty)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
                 )}
               </CardContent>
             </Card>
@@ -145,28 +153,30 @@ export function FgDashboardPage() {
                 {data.productGradeWiseStock.length === 0 ? (
                   <p className="text-sm text-ink-faint">No FG batches yet.</p>
                 ) : (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>SKU</TableHead>
-                        <TableHead>Grade</TableHead>
-                        <TableHead className="text-right">Available</TableHead>
-                        <TableHead className="text-right">Reserved</TableHead>
-                        <TableHead className="text-right">Dispatched</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {data.productGradeWiseStock.map((g) => (
-                        <TableRow key={`${g.sku}-${g.plywoodGrade ?? "none"}`}>
-                          <TableCell className="font-mono">{g.sku}</TableCell>
-                          <TableCell className="text-ink-muted">{g.plywoodGrade ?? "—"}</TableCell>
-                          <TableCell numeric className="text-signal-amber">{formatNumber(g.availableQty)}</TableCell>
-                          <TableCell numeric className="text-ink-muted">{formatNumber(g.reservedQty)}</TableCell>
-                          <TableCell numeric className="text-ink-muted">{formatNumber(g.dispatchedQty)}</TableCell>
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>SKU</TableHead>
+                          <TableHead>Grade</TableHead>
+                          <TableHead className="text-right">Available</TableHead>
+                          <TableHead className="text-right">Reserved</TableHead>
+                          <TableHead className="text-right">Dispatched</TableHead>
                         </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                      </TableHeader>
+                      <TableBody>
+                        {data.productGradeWiseStock.map((g) => (
+                          <TableRow key={`${g.sku}-${g.plywoodGrade ?? "none"}`}>
+                            <TableCell className="font-mono">{g.sku}</TableCell>
+                            <TableCell className="text-ink-muted">{g.plywoodGrade ?? "—"}</TableCell>
+                            <TableCell numeric className="text-signal-amber">{formatNumber(g.availableQty)}</TableCell>
+                            <TableCell numeric className="text-ink-muted">{formatNumber(g.reservedQty)}</TableCell>
+                            <TableCell numeric className="text-ink-muted">{formatNumber(g.dispatchedQty)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
                 )}
               </CardContent>
             </Card>
