@@ -843,6 +843,9 @@ model FgBatch {
   // SalesOrder/FgReservation's own comments for why this supersedes the
   // plain salesOrderId field above rather than that field gaining an FK).
   reservations FgReservation[]
+  // FG Module Part 4 — every dispatch event that has drawn stock from this
+  // batch (see FgDispatchLineItem's own comment).
+  dispatchLineItems FgDispatchLineItem[]
 
   @@index([productionOrderId])
   @@index([warehouseId])
@@ -901,6 +904,8 @@ model SalesOrder {
   createdAt    DateTime         @default(now()) @map("created_at")
 
   reservations FgReservation[]
+  // FG Module Part 4.
+  dispatches   FgDispatch[]
 
   @@map("sales_orders")
 }
@@ -930,6 +935,55 @@ model FgReservation {
   @@index([salesOrderId])
   @@index([status])
   @@map("fg_reservations")
+}
+
+// FG Module Part 4 — one dispatch EVENT, which can cover several FG batches
+// in a single transaction (see FgDispatchLineItem). `salesOrderId` — unlike
+// the same-named, deliberately-unwired field Part 1 left on FgBatch — DOES
+// get a real relation here: a dispatch genuinely belongs to at most one real
+// Sales Order (or none, for general/unaffiliated stock movement), so there's
+// no many-to-many shape to worry about the way there was for FgBatch <->
+// SalesOrder (that's what FgReservation/FgDispatchLineItem, the actual join
+// tables, are for). No `onDelete: Cascade` — same as FgReservation.
+// salesOrderId — so a Sales Order with any dispatch history, like one with
+// any reservation history, can never be silently deleted out from under it.
+model FgDispatch {
+  id           BigInt    @id @default(autoincrement())
+  dispatchNo   String    @unique @map("dispatch_no")
+  salesOrderId BigInt?   @map("sales_order_id")
+  dispatchDate DateTime  @default(now()) @map("dispatch_date") @db.Date
+  dispatchedBy String    @map("dispatched_by")
+  notes        String?
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  salesOrder SalesOrder?          @relation(fields: [salesOrderId], references: [id])
+  lineItems  FgDispatchLineItem[]
+
+  @@index([salesOrderId])
+  @@index([dispatchDate])
+  @@map("fg_dispatches")
+}
+
+// FG Module Part 4 — one row per FG batch drawn on within a dispatch event;
+// what actually lets one dispatch cover several batches in one transaction.
+// `quantity` is netted against the batch's own reservedQty (for the
+// dispatch's salesOrderId specifically) before availableQty — see
+// `processDispatchLineItem` in fgDispatch.service.ts for the exact order,
+// and README "FG Module Part 4" for the full rationale. Never edited after
+// creation, same "audit-trail row" convention as FgStockMovement — a
+// dispatch, once made, is a historical fact.
+model FgDispatchLineItem {
+  id         BigInt   @id @default(autoincrement())
+  dispatchId BigInt   @map("dispatch_id")
+  fgBatchId  BigInt   @map("fg_batch_id")
+  quantity   Decimal  @db.Decimal(12, 2)
+
+  dispatch FgDispatch @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  fgBatch  FgBatch    @relation(fields: [fgBatchId], references: [id])
+
+  @@index([dispatchId])
+  @@index([fgBatchId])
+  @@map("fg_dispatch_line_items")
 }
 
 // ============================================================================

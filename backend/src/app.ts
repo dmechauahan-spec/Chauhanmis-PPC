@@ -33,6 +33,7 @@ import warehousesRouter from './modules/warehouses/warehouses.routes';
 import fgBatchRouter from './modules/fgBatch/fgBatch.routes';
 import fgReservationRouter from './modules/fgBatch/fgReservation.routes';
 import salesOrdersRouter from './modules/salesOrders/salesOrders.routes';
+import fgDispatchRouter from './modules/fgDispatch/fgDispatch.routes';
 import authRouter from './modules/auth/auth.routes';
 
 installBigIntJsonSupport();
@@ -86,6 +87,7 @@ export function createApp(): Express {
   app.use('/api/fg-batches', fgBatchRouter);
   app.use('/api/fg-reservations', fgReservationRouter);
   app.use('/api/sales-orders', salesOrdersRouter);
+  app.use('/api/fg-dispatches', fgDispatchRouter);
   app.use('/api/auth', authRouter);
 
   app.use(notFoundHandler);

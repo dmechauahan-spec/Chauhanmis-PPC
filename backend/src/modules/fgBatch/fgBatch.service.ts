@@ -1,4 +1,4 @@
-import { FgDispatchStatus, FgMovementType, FgQcStatus, FgStockStatus, Prisma } from '@prisma/client';
+import { FgDispatchStatus, FgMovementType, FgQcStatus, FgReservationStatus, FgStockStatus, Prisma } from '@prisma/client';
 import { prisma } from '../../db/client';
 import { NotFoundError, ValidationError, BusinessRuleError } from '../../utils/errors';
 import { buildPaginated, PaginatedResult } from '../../utils/apiResponse';
@@ -11,6 +11,7 @@ import { recomputeSalesOrderStatus } from '../salesOrders/salesOrders.service';
 import {
   GenerateFgBatchInput,
   HoldFgBatchInput,
+  ListDispatchEligibleQuery,
   ListFgBatchesQuery,
   ReleaseHoldFgBatchInput,
   ReserveFgBatchInput,
@@ -27,6 +28,45 @@ import {
 // there is no second copy of this formula anywhere to drift out of sync.
 export function computeAvailableQty(batch: { qcPassedQty: number; reservedQty: number; dispatchedQty: number }): number {
   return round2(batch.qcPassedQty - batch.reservedQty - batch.dispatchedQty);
+}
+
+// FG Module Part 4 — generalized out of Part 3's own reserveFgBatch (which
+// originally inlined this same "still Available unless nothing's left"
+// check). Every action that changes reservedQty and/or dispatchedQty on a
+// batch — reserve, cancel (fgReservation.service.ts), and now dispatch
+// (fgDispatch.service.ts) — computes its next stockStatus through this one
+// function, so the rule lives in exactly one place:
+//   1. A batch currently on `Hold` STAYS `Hold`, no matter what reservedQty/
+//      dispatchedQty become. Only a real release-hold call (Part 2) ever
+//      clears it — see holdFgBatch/releaseHoldFgBatch above. Reserving
+//      against a Hold batch is already blocked (reserveFgBatch), and so is
+//      dispatching (processDispatchLineItem in fgDispatch.service.ts), so in
+//      practice this branch only ever matters for actions on a batch that
+//      was put on Hold AFTER it already had reservations/dispatches against
+//      it — cancelling one of those must not silently un-hold it.
+//   2. Otherwise: `Available` if any quantity is still free
+//      (qcPassedQty - reservedQty - dispatchedQty > 0), else `Reserved`.
+//      `Reserved` here means "nothing left to reserve", not "this batch has
+//      an active reservation" — and, as of Part 4, it's also the correct
+//      label for a FULLY DISPATCHED batch (availableQty and reservedQty both
+//      0): `stockStatus` only ever answers "is there anything still free,"
+//      `dispatchStatus` is the separate field that actually says
+//      `Dispatched` — see fgDispatch.service.ts's own dispatchStatus
+//      comment. There is no third `stockStatus` value for "fully shipped."
+export function computeStockStatus(
+  batch: { qcPassedQty: number; stockStatus: FgStockStatus },
+  nextReservedQty: number,
+  nextDispatchedQty: number,
+): FgStockStatus {
+  if (batch.stockStatus === FgStockStatus.Hold) {
+    return FgStockStatus.Hold;
+  }
+  const nextAvailableQty = computeAvailableQty({
+    qcPassedQty: batch.qcPassedQty,
+    reservedQty: nextReservedQty,
+    dispatchedQty: nextDispatchedQty,
+  });
+  return nextAvailableQty > 0 ? FgStockStatus.Available : FgStockStatus.Reserved;
 }
 
 const includeLinked = {
@@ -332,6 +372,64 @@ export async function listFgBatches(query: ListFgBatchesQuery): Promise<Paginate
   return buildPaginated(items.map(toOutput), total, query.page, query.pageSize);
 }
 
+export interface DispatchEligibleFgBatchOutput extends FgBatchOutput {
+  /** Sum of this batch's own Active FgReservation rows for the query's salesOrderId — 0 if no salesOrderId was given, or none exist. */
+  reservedForSalesOrderQty: number;
+}
+
+// FG Module Part 4 — GET /api/fg-batches/dispatch-eligible, the selectable
+// list for POST /api/fg-dispatches. Eligibility is exactly three
+// conditions: not on Hold, QC-passed, and some real undispatched quantity
+// remains (qcPassedQty - dispatchedQty > 0) — deliberately NOT filtered by
+// stockStatus = Available, since a Reserved batch is still eligible to
+// dispatch against its OWN reservation (that's the entire point of
+// reserving — see fgDispatch.service.ts). The last condition is a
+// cross-column comparison (qcPassedQty vs. dispatchedQty), which Prisma's
+// query builder can't express directly, so it's applied in application code
+// after the two DB-expressible conditions (stockStatus/qcStatus) narrow the
+// candidate set — same "computed value, fetch then filter/sort/paginate in
+// memory" approach shortageReport.service.ts's own urgencyScore sort uses,
+// bounded by the same "small working set for a single factory" reasoning.
+//
+// `salesOrderId`, when given, doesn't EXCLUDE unreserved-but-eligible
+// stock — it only changes ORDER: batches carrying an Active reservation for
+// that Sales Order sort first (by reservedForSalesOrderQty desc), so the
+// natural "fulfill this order's own reserved stock first" choice is at the
+// top, but every other eligible batch is still fully visible below it.
+export async function listDispatchEligibleFgBatches(
+  query: ListDispatchEligibleQuery,
+): Promise<PaginatedResult<DispatchEligibleFgBatchOutput>> {
+  const rows = await prisma.fgBatch.findMany({
+    where: { stockStatus: { not: FgStockStatus.Hold }, qcStatus: FgQcStatus.Pass },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  const eligible = rows.filter((row) => round2(Number(row.qcPassedQty) - Number(row.dispatchedQty)) > 0);
+
+  let reservedByBatchId = new Map<bigint, number>();
+  if (query.salesOrderId !== undefined) {
+    const grouped = await prisma.fgReservation.groupBy({
+      by: ['fgBatchId'],
+      where: { salesOrderId: query.salesOrderId, status: FgReservationStatus.Active },
+      _sum: { reservedQty: true },
+    });
+    reservedByBatchId = new Map(grouped.map((g) => [g.fgBatchId, Number(g._sum.reservedQty ?? 0)]));
+  }
+
+  const withReserved: DispatchEligibleFgBatchOutput[] = eligible.map((row) => ({
+    ...toOutput(row),
+    reservedForSalesOrderQty: reservedByBatchId.get(row.id) ?? 0,
+  }));
+
+  // Stable sort (guaranteed by JS since ES2019) — ties keep the createdAt
+  // desc ordering the initial query already applied.
+  withReserved.sort((a, b) => b.reservedForSalesOrderQty - a.reservedForSalesOrderQty);
+
+  const { skip, take } = toSkipTake(query);
+  const items = withReserved.slice(skip, skip + take);
+  return buildPaginated(items, withReserved.length, query.page, query.pageSize);
+}
+
 export async function getFgBatchByNo(fgBatchNo: string): Promise<FgBatchDetailOutput> {
   const row = await prisma.fgBatch.findUnique({ where: { fgBatchNo }, include: includeLinked });
   if (!row) {
@@ -514,10 +612,9 @@ export async function reserveFgBatch(fgBatchNo: string, input: ReserveFgBatchInp
   }
 
   const nextReservedQty = round2(currentReservedQty + input.qty);
-  const nextAvailableQty = computeAvailableQty({ qcPassedQty, reservedQty: nextReservedQty, dispatchedQty });
-  // See the rule documented above the function: still Available unless this
+  // See computeStockStatus's own doc comment: still Available unless this
   // reservation used up every remaining unit.
-  const nextStockStatus = nextAvailableQty > 0 ? FgStockStatus.Available : FgStockStatus.Reserved;
+  const nextStockStatus = computeStockStatus({ qcPassedQty, stockStatus: batch.stockStatus }, nextReservedQty, dispatchedQty);
 
   const updated = await prisma.$transaction(async (tx) => {
     await tx.fgReservation.create({

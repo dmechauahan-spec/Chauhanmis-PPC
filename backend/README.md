@@ -2251,10 +2251,11 @@ file) rather than a new file — it's fundamentally an `FgBatch`-mutating action
 file's own `getBareFgBatchOrThrow`/`toOutput`/`computeAvailableQty`. `cancelReservation` and
 `listReservationsForSalesOrder`, by contrast, live in a new `fgBatch/fgReservation.service.ts` — the
 `FgReservation` entity's own file, reached via the separate `/api/fg-reservations` and
-`/api/sales-orders/:salesOrderNo/reservations` paths. That file imports `computeAvailableQty` back
+`/api/sales-orders/:salesOrderNo/reservations` paths. That file imports `computeStockStatus` back
 from `fgBatch.service.ts` (one-directional — `fgBatch.service.ts` never imports anything from
-`fgReservation.service.ts`), so "how much is actually free" still has exactly one implementation,
-reused by both reserve and cancel.
+`fgReservation.service.ts`), so the stockStatus-recompute rule still has exactly one implementation.
+(As of Part 4, `computeStockStatus` — generalized out of what this part originally inlined here —
+is that one implementation, reused by reserve, cancel, AND dispatch; see README "FG Module Part 4".)
 
 **Permissions.** Two **new** entries. `salesOrders` (`read: STORE_AND_PRODUCTION`, `write:
 STORE_ONLY`) for Sales Order CRUD — `StoreManager` owns the inventory/fulfillment side of this
@@ -2262,6 +2263,112 @@ module, same as `fgStockMovements`. `fgReservations` (`read: STORE_AND_PRODUCTIO
 STORE_ONLY`) for reserve/cancel — kept as its own entry rather than reusing `fgStockMovements`, since
 reservation and stock-movement actions are conceptually distinct even though they currently resolve
 to identical roles.
+
+### FG Module Part 4 — Dispatch
+
+The final write-side piece: only Dispatch-eligible FG (not on Hold, has real remaining quantity)
+should be selectable for dispatch; dispatching reduces available/reserved stock, supports partial
+dispatch across several FG batches in one dispatch event, and updates every affected batch's and
+Sales Order's status. This is the most complex composition point in the whole FG module — it reads
+as an orchestration of every already-built piece (`computeAvailableQty`, the new
+`computeStockStatus`, `logFgMovement`, `recomputeSalesOrderStatus`), not a from-scratch
+reimplementation of any of them.
+
+**`fg_dispatches` / `fg_dispatch_line_items` — one dispatch EVENT, several batches.** `FgDispatch`
+(`dispatchNo`, `salesOrderId?`, `dispatchDate` — always today, no override accepted — `dispatchedBy`,
+`notes?`) is the event; `FgDispatchLineItem` (`dispatchId`, `fgBatchId`, `quantity`) is what actually
+lets one event cover several batches, one row per batch drawn on. Unlike `fg_batches.sales_order_id`
+(the plain, deliberately-unwired field Part 1 left and Part 3 explicitly superseded rather than
+reused), `FgDispatch.salesOrderId` **does** get a real FK to `SalesOrder` — a dispatch genuinely
+belongs to at most one real Sales Order (or none, for general/unaffiliated stock movement), so
+there's no many-to-many shape here the way there was for `FgBatch` <-> `SalesOrder` (that's what the
+join tables, `FgReservation` and `FgDispatchLineItem`, are for). No `onDelete: Cascade` on that FK —
+same as `FgReservation.salesOrderId` — so a Sales Order with any dispatch history, like one with any
+reservation history, can never be silently deleted out from under it.
+
+**`GET /api/fg-batches/dispatch-eligible` — the selectable list.** Exactly three conditions, all
+independent of `stockStatus = Available`: not on `Hold`, `qcStatus = Pass`, and
+`qcPassedQty - dispatchedQty > 0` (real undispatched quantity remains). Deliberately **not** filtered
+to `stockStatus = Available` — a `Reserved` batch is still fully eligible to dispatch against its OWN
+reservation, that's the entire point of reserving. The third condition is a cross-column comparison
+Prisma's query builder can't express directly, so the two DB-expressible conditions
+(`stockStatus`/`qcStatus`) narrow the set first, then the remaining filter — and, when `salesOrderId`
+is given, the "which batches carry a reservation for it" sort — happen in application code, the same
+"fetch, compute, sort/paginate in memory" approach `shortageReport.service.ts`'s own `urgencyScore`
+sort already uses, bounded by the same "small working set for a single factory" reasoning.
+`salesOrderId` **never hides** unreserved-but-eligible stock — it only changes order: batches
+carrying an Active reservation for that Sales Order sort first (by `reservedForSalesOrderQty` desc),
+so the natural "use this order's own reserved stock first" choice is at the top, with every other
+eligible batch still fully visible below it.
+
+**`POST /api/fg-dispatches` — the reservation-vs-available netting order. Read this before touching
+`processDispatchLineItem` in `fgDispatch.service.ts`.** For each line item `{ fgBatchId, quantity }`:
+
+1. Reservations considered are scoped **strictly** to the dispatch's own `salesOrderId`. A dispatch
+   can **never** draw down a *different* Sales Order's reservation on the same batch — one batch can
+   carry reservations for several different Sales Orders at once (Part 3), and this dispatch only has
+   a claim on the one it names. A dispatch made with **no** `salesOrderId` (general/unaffiliated stock
+   movement) never touches **any** reservation, on any Sales Order — it can only draw from genuinely
+   free `availableQty`.
+2. The dispatchable ceiling for the line item is therefore `availableQty + reservedForThisSalesOrder`
+   — **not** the naive `qcPassedQty - dispatchedQty`, which would let a dispatch silently eat into a
+   *different* Sales Order's reservation on the same batch whenever more than one SO holds stock
+   there. (In the common case of a batch with only one Sales Order's reservation on it, or none, the
+   two formulas are identical — the refinement only matters once a batch is shared across SOs, exactly
+   the multi-tenant scenario Part 3's own reservation design makes possible.)
+3. `reservedPortion = min(quantity, reservedForThisSalesOrder)` is consumed **first**, FIFO (oldest
+   `reservedAt` first) across this batch's own Active `FgReservation` rows for this Sales Order,
+   decrementing each row's `reservedQty` in turn. A row that reaches exactly 0 is marked **`Fulfilled`**
+   — never left dangling `Active` with nothing left. A row only partially consumed stays `Active` with
+   its `reservedQty` reduced — exactly mirroring how `FgBatch.reservedQty` itself already shrinks on
+   cancel (Part 3): a reservation row's `reservedQty` is a live, currently-outstanding number, not a
+   frozen historical constant.
+4. Whatever remains of `quantity` after `reservedPortion` — the `availablePortion` — comes from free
+   `availableQty`. It is **never separately persisted anywhere**: `availableQty` is (Part 1) always
+   computed, never stored, so "drawing from it" just means the batch's `dispatchedQty` grows by the
+   line item's **full** `quantity` while `reservedQty` only shrinks by `reservedPortion` — the
+   arithmetic itself is where the split lands, there is no second number to keep in sync.
+
+**The multi-line-item transaction.** The `FgDispatch` row, every line item's `FgBatch`/`FgReservation`
+updates, every `Dispatched` movement, and the parent Sales Order's status recompute all happen in
+**one** `prisma.$transaction` — a dispatch either fully lands or, on any line item's failure (unknown
+batch, `Hold`, non-`Pass` QC, over-quantity), fully rolls back, including line items that were
+individually valid. Line items are processed **sequentially, not in parallel** — each one re-reads its
+batch's current state inside the same transaction, so two line items that happen to name the *same*
+`fgBatchId` (unusual, not rejected) net correctly against each other instead of racing on stale reads.
+
+**`dispatchStatus`/`stockStatus` recompute, per line item.** `dispatchStatus` becomes `Dispatched` if
+`dispatchedQty === qcPassedQty` (fully consumed) after this line item, `Partial` otherwise (dispatching
+always adds a positive quantity, so "stays as it was" is defensive/unreachable in practice — kept only
+so the rule reads complete, not silently two-way). `stockStatus` goes through the **same**
+`computeStockStatus` Part 3's reserve/cancel already use (generalized here to take both
+`nextReservedQty` **and** `nextDispatchedQty`, not just the former) — Hold is always preserved, else
+`Available` if anything's still free, `Reserved` if not. **A fully-dispatched batch reads `stockStatus
+= Reserved`, not some new "Dispatched" stock status** — `stockStatus` only ever answers "is anything
+still free," `dispatchStatus` is the separate field that actually says `Dispatched`. There is no third
+`stockStatus` value for "fully shipped," by design.
+
+**`recomputeSalesOrderStatus`, extended.** Part 3's own function (see its README section) is extended
+exactly as its own scope note flagged it would need to be: dispatch progress now takes precedence over
+reservation progress, computed as `dispatchedQty` = the sum of every `FgDispatchLineItem.quantity`
+across every `FgDispatch` actually made against this Sales Order (joined via `FgDispatch.salesOrderId`
+— a dispatch with no `salesOrderId` never contributes to this sum, by design, point 1 above):
+
+```
+dispatchedQty >= orderedQty              -> Dispatched
+0 < dispatchedQty < orderedQty           -> PartiallyDispatched
+dispatchedQty == 0, reservedQty >= orderedQty -> FullyReserved
+dispatchedQty == 0, 0 < reservedQty < orderedQty -> PartiallyReserved
+otherwise                                -> Open
+```
+
+`Closed` remains declared on `SalesOrderStatus` but **unreachable** — there is still no "close this
+Sales Order" action in this codebase. The function's signature and every existing caller (Part 3's own
+reserve/cancel) are unchanged; they simply now also respect dispatch state, which is 0 (a no-op) for
+every scenario that predates dispatch existing.
+
+**Permissions.** One **new** entry, `fgDispatches` (`read: STORE_AND_PRODUCTION`, `write:
+STORE_ONLY`) — the same inventory-side split as `fgStockMovements`/`fgReservations`/`salesOrders`.
 
 ## Assumptions
 

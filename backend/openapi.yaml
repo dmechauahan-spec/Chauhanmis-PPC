@@ -60,6 +60,7 @@ tags:
   - name: Warehouses
   - name: FG Batches
   - name: Sales Orders
+  - name: FG Dispatches
 
 components:
   securitySchemes:
@@ -1357,8 +1358,9 @@ components:
           enum: [Open, PartiallyReserved, FullyReserved, PartiallyDispatched, Dispatched, Closed]
           description: >
             NEVER client-settable — not even accepted in the request body. Only recomputeSalesOrderStatus
-            (called from reserve/cancel) ever changes it. PartiallyDispatched/Dispatched/Closed are
-            declared but unreachable until Part 4.
+            (called from reserve/cancel/dispatch) ever changes it. Dispatch progress takes precedence
+            over reservation progress — see README "FG Module Part 4". Closed is declared but
+            unreachable — there is no "close this Sales Order" action in this codebase.
         dueDate: { type: string, format: date, nullable: true }
         createdBy: { type: string, readOnly: true }
         createdAt: { type: string, format: date-time, readOnly: true }
@@ -1379,9 +1381,44 @@ components:
         status:
           type: string
           enum: [Active, Cancelled, Fulfilled]
-          description: Fulfilled is declared now but unreachable until Part 4's dispatch.
+          description: Fulfilled is set by Part 4's dispatch when this row's reservedQty is fully consumed.
         reservedBy: { type: string, description: The authenticated caller's name — never client-supplied. }
         reservedAt: { type: string, format: date-time }
+
+    FgDispatch:
+      type: object
+      description: >
+        FG Module Part 4. One dispatch EVENT, which can cover several FG batches via its lineItems
+        (see FgDispatchLineItem). salesOrderId, unlike the deliberately-unwired FgBatch.salesOrderId,
+        gets a real FK to SalesOrder. See README "FG Module Part 4".
+      properties:
+        id: { type: integer, readOnly: true }
+        dispatchNo: { type: string, readOnly: true, example: DSP-20260819-01, description: Generated via the shared sequential-id scheme, sequenced off today (dispatchDate has no override field). }
+        salesOrderId: { type: integer, nullable: true, description: Optional — a dispatch can be general/unaffiliated stock movement. }
+        dispatchDate: { type: string, format: date, readOnly: true, description: Always today — no override accepted. }
+        dispatchedBy: { type: string, readOnly: true, description: The authenticated caller's name — never client-supplied. }
+        notes: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time, readOnly: true }
+        lineItems:
+          type: array
+          readOnly: true
+          items: { $ref: '#/components/schemas/FgDispatchLineItem' }
+
+    FgDispatchLineItem:
+      type: object
+      readOnly: true
+      description: >
+        FG Module Part 4. One row per FG batch drawn on within a dispatch event — resolved to that
+        batch's key info (fgBatchNo/sku/productName) inline, so the UI doesn't need a second lookup.
+        quantity is netted against the batch's own reservedQty (for the dispatch's salesOrderId
+        specifically) before availableQty — see README "FG Module Part 4" for the exact order.
+      properties:
+        id: { type: integer }
+        fgBatchId: { type: integer }
+        fgBatchNo: { type: string }
+        sku: { type: string }
+        productName: { type: string }
+        quantity: { type: number }
 
 paths:
   /auth/login:
@@ -3552,6 +3589,26 @@ paths:
       responses:
         '200': { description: Paginated list of FG batches, each including the computed availableQty }
 
+  /fg-batches/dispatch-eligible:
+    get:
+      tags: [FG Batches]
+      summary: The selectable list for POST /fg-dispatches
+      description: >
+        FG Module Part 4. stockStatus != Hold, qcStatus = Pass, and qcPassedQty - dispatchedQty > 0
+        — deliberately NOT restricted to stockStatus = Available, since a Reserved batch is still
+        eligible to dispatch against its own reservation. salesOrderId only changes ORDER (batches
+        with an Active reservation for it sort first, via reservedForSalesOrderQty desc) — it never
+        hides unreserved-but-eligible stock. See README "FG Module Part 4".
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: salesOrderId
+          in: query
+          schema: { type: integer }
+          description: Sort preference only, not a filter — see description above.
+      responses:
+        '200': { description: Paginated list of FgBatch, each with an added reservedForSalesOrderQty (0 if salesOrderId was omitted or none exists) }
+
   /fg-batches/{fgBatchNo}:
     parameters:
       - name: fgBatchNo
@@ -3841,4 +3898,77 @@ paths:
                   total: { type: integer }
                   page: { type: integer }
                   pageSize: { type: integer }
+        '404': { description: Not found }
+
+  /fg-dispatches:
+    post:
+      tags: [FG Dispatches]
+      summary: Create a dispatch — the netting order is documented on the schema/README
+      description: >
+        FG Module Part 4. lineItems processed sequentially in ONE transaction — any line item's
+        failure (unknown fgBatchId, Hold, non-Pass QC, over-quantity) rolls back the whole dispatch,
+        including line items that were individually valid. Per line item: reservedQty (scoped to
+        THIS dispatch's own salesOrderId only) is drawn down before availableQty; a reservation row
+        fully consumed is marked Fulfilled. Recomputes fgBatch.dispatchStatus/stockStatus and, if
+        salesOrderId was given, the parent SalesOrder.status. Requires Admin/StoreManager. See
+        README "FG Module Part 4" for the full worked netting-order example.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lineItems]
+              properties:
+                salesOrderId: { type: integer, description: Optional — omit for general/unaffiliated stock movement. }
+                lineItems:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [fgBatchId, quantity]
+                    properties:
+                      fgBatchId: { type: integer }
+                      quantity: { type: number, exclusiveMinimum: 0 }
+                notes: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FgDispatch' }
+        '400': { description: Validation error, including an empty lineItems array }
+        '404': { description: Unknown salesOrderId, or an unknown fgBatchId in a line item }
+        '409': { description: 'A line item batch is on Hold, not QC-passed, or its quantity exceeds availableQty + reservedForThisSalesOrderQty' }
+    get:
+      tags: [FG Dispatches]
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: salesOrderId
+          in: query
+          schema: { type: integer }
+        - name: dateFrom
+          in: query
+          schema: { type: string, format: date }
+        - name: dateTo
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200': { description: Paginated list of FgDispatch, each with lineItems resolved to their batch's key info }
+
+  /fg-dispatches/{dispatchNo}:
+    parameters:
+      - name: dispatchNo
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [FG Dispatches]
+      responses:
+        '200':
+          description: FG dispatch detail, with lineItems resolved to their batch's key info
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FgDispatch' }
         '404': { description: Not found }

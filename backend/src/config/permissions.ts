@@ -74,4 +74,9 @@ export const PERMISSIONS = {
   // stock-movement actions are conceptually distinct, even though they
   // currently resolve to the same roles.
   fgReservations: { read: STORE_AND_PRODUCTION, write: STORE_ONLY },
+  // FG Module Part 4 — dispatch creation/list/detail. Same StoreManager-
+  // write, all-roles-read split as the rest of the module's inventory-side
+  // actions (fgStockMovements/fgReservations) — see README "FG Module
+  // Part 4".
+  fgDispatches: { read: STORE_AND_PRODUCTION, write: STORE_ONLY },
 } as const;

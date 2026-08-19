@@ -1,10 +1,10 @@
-import { FgMovementType, FgReservationStatus, FgStockStatus } from '@prisma/client';
+import { FgMovementType, FgReservationStatus } from '@prisma/client';
 import { prisma } from '../../db/client';
 import { BusinessRuleError, NotFoundError } from '../../utils/errors';
 import { buildPaginated, PaginatedResult } from '../../utils/apiResponse';
 import { toSkipTake } from '../../utils/pagination';
 import { round2 } from '../scheduling/schedulingEngine';
-import { computeAvailableQty } from './fgBatch.service';
+import { computeStockStatus } from './fgBatch.service';
 import { logFgMovement } from './fgStockMovement.service';
 import { getSalesOrderByNo, recomputeSalesOrderStatus } from '../salesOrders/salesOrders.service';
 import { ListReservationsQuery } from '../salesOrders/salesOrders.schema';
@@ -14,11 +14,11 @@ import { ListReservationsQuery } from '../salesOrders/salesOrders.schema';
 // (reached via /api/sales-orders/:salesOrderNo/reservations). The OTHER
 // reservation action, reserve itself, deliberately lives in
 // fgBatch.service.ts instead — see that file's own comment on `reserveFgBatch`
-// for why. This file imports `computeAvailableQty` back from there (a
+// for why. This file imports `computeStockStatus` back from there (a
 // one-directional dependency: fgBatch.service.ts never imports anything
-// from this file), so the "how much is actually free" formula still has
-// exactly one implementation, reused by reserve, cancel, and everything
-// else that returns an FgBatch.
+// from this file — Part 4's fgDispatch.service.ts imports it the same way),
+// so the stockStatus recompute rule still has exactly one implementation,
+// reused by reserve, cancel, and dispatch alike.
 
 type FgReservationRow = Awaited<ReturnType<typeof prisma.fgReservation.findFirstOrThrow>>;
 
@@ -71,20 +71,11 @@ export async function cancelReservation(id: bigint, performedBy: string): Promis
   // grows it) rather than trusting the subtraction blindly.
   const nextReservedQty = Math.max(0, round2(Number(batch.reservedQty) - Number(reservation.reservedQty)));
 
-  // Mirrors release-hold's own "recompute, never clobber Hold" logic (see
-  // fgBatch.service.ts's holdFgBatch/releaseHoldFgBatch): if this batch is
-  // currently on Hold, cancelling one of its reservations frees up the
-  // quantity but must NOT silently un-hold it — stockStatus stays Hold
-  // until a real release-hold call restores whatever it recomputes to.
-  // Otherwise, same partial-reservation rule as reserveFgBatch: Available
-  // again unless something else still accounts for every remaining unit.
-  const nextAvailableQty = computeAvailableQty({ qcPassedQty, reservedQty: nextReservedQty, dispatchedQty });
-  const nextStockStatus =
-    batch.stockStatus === FgStockStatus.Hold
-      ? FgStockStatus.Hold
-      : nextAvailableQty > 0
-        ? FgStockStatus.Available
-        : FgStockStatus.Reserved;
+  // See fgBatch.service.ts's computeStockStatus for the full rule (Hold
+  // preserved, otherwise Available unless nothing's left) — the shared
+  // implementation reserveFgBatch, this, and Part 4's dispatch all go
+  // through now.
+  const nextStockStatus = computeStockStatus({ qcPassedQty, stockStatus: batch.stockStatus }, nextReservedQty, dispatchedQty);
 
   const updated = await prisma.$transaction(async (tx) => {
     const result = await tx.fgReservation.update({

@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { sendSuccess } from '../../utils/apiResponse';
 import * as fgBatchService from './fgBatch.service';
 import * as fgStockMovementService from './fgStockMovement.service';
-import { ListFgBatchesQuery, ListFgMovementsQuery } from './fgBatch.schema';
+import { ListDispatchEligibleQuery, ListFgBatchesQuery, ListFgMovementsQuery } from './fgBatch.schema';
 
 export async function generate(req: Request, res: Response, next: NextFunction) {
   try {
@@ -21,6 +21,15 @@ export async function generate(req: Request, res: Response, next: NextFunction) 
 export async function list(req: Request, res: Response, next: NextFunction) {
   try {
     const result = await fgBatchService.listFgBatches(req.query as unknown as ListFgBatchesQuery);
+    sendSuccess(res, result);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listDispatchEligible(req: Request, res: Response, next: NextFunction) {
+  try {
+    const result = await fgBatchService.listDispatchEligibleFgBatches(req.query as unknown as ListDispatchEligibleQuery);
     sendSuccess(res, result);
   } catch (err) {
     next(err);

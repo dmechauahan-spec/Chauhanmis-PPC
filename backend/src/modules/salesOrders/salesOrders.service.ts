@@ -79,39 +79,63 @@ export async function deleteSalesOrder(salesOrderNo: string): Promise<void> {
   await prisma.salesOrder.delete({ where: { id: existing.id } });
 }
 
-// The reusable status-recompute function — see README "FG Module Part 3".
-// Called by this part's own reserve/cancel actions (fgBatch.service.ts's
-// reserveFgBatch, fgReservation.service.ts's cancelReservation), and Part
-// 4's future dispatch actions will call it too (hence living here, not
-// inlined into either caller). ALWAYS takes a transaction client and is
-// ALWAYS called from inside the same prisma.$transaction as the
-// FgReservation write that changed the picture — the SalesOrder's status
-// must never observably lag behind its own reservations.
+// The reusable status-recompute function — see README "FG Module Part 3"
+// and "FG Module Part 4" for the full design. Called by reserve/cancel
+// (fgBatch.service.ts's reserveFgBatch, fgReservation.service.ts's
+// cancelReservation) and, as of Part 4, by dispatch creation
+// (fgDispatch.service.ts's createDispatch) too — hence living here, not
+// inlined into any of its three callers. ALWAYS takes a transaction client
+// and is ALWAYS called from inside the same prisma.$transaction as the
+// FgReservation/FgDispatch write that changed the picture — the
+// SalesOrder's status must never observably lag behind its own
+// reservations/dispatches.
 //
-// Scope note for Part 4: this recomputes purely from the sum of *Active*
-// reservations vs. orderedQty (Open / PartiallyReserved / FullyReserved).
-// PartiallyDispatched/Dispatched/Closed are NOT set by this function and
-// are unreachable in this part — Part 4, when it starts moving reservations
-// to Fulfilled (shrinking the Active sum) and driving those three states,
-// will need its own additional logic layered on top of (or a documented
-// interaction with) this function rather than assuming a naive re-call
-// here is safe once dispatch has begun.
+// FG Module Part 4 — extended exactly as Part 3's own scope note flagged:
+// dispatch progress now takes precedence over reservation progress in the
+// precedence order below, mirroring the real lifecycle (reserve, THEN
+// dispatch — you can't ship what was never earmarked, but once shipping has
+// started that's the more advanced state regardless of how much is still
+// reserved elsewhere on the order):
+//   dispatchedQty >= orderedQty  -> Dispatched        (fully shipped)
+//   0 < dispatchedQty < orderedQty -> PartiallyDispatched (some shipped)
+//   dispatchedQty == 0 and activeReservedQty >= orderedQty -> FullyReserved
+//   dispatchedQty == 0 and 0 < activeReservedQty < orderedQty -> PartiallyReserved
+//   otherwise -> Open
+// `dispatchedQty` here is the sum of every FgDispatchLineItem.quantity
+// across every FgDispatch actually made against this Sales Order (joined
+// via FgDispatch.salesOrderId, never through FgBatch's own superseded
+// field) — a dispatch made with no salesOrderId never touches this sum, by
+// design (see fgDispatch.service.ts). `Closed` is still declared on
+// SalesOrderStatus but NOT set by this function and remains unreachable by
+// anything built through Part 4 — there is no "close this Sales Order"
+// action yet.
 export async function recomputeSalesOrderStatus(tx: PrismaTransactionClient, salesOrderId: bigint): Promise<void> {
   const salesOrder = await tx.salesOrder.findUniqueOrThrow({ where: { id: salesOrderId } });
-
-  const agg = await tx.fgReservation.aggregate({
-    where: { salesOrderId, status: FgReservationStatus.Active },
-    _sum: { reservedQty: true },
-  });
-  const activeReservedQty = Number(agg._sum.reservedQty ?? 0);
   const orderedQty = Number(salesOrder.orderedQty);
 
+  const [reservedAgg, dispatchedAgg] = await Promise.all([
+    tx.fgReservation.aggregate({
+      where: { salesOrderId, status: FgReservationStatus.Active },
+      _sum: { reservedQty: true },
+    }),
+    tx.fgDispatchLineItem.aggregate({
+      where: { dispatch: { salesOrderId } },
+      _sum: { quantity: true },
+    }),
+  ]);
+  const activeReservedQty = Number(reservedAgg._sum.reservedQty ?? 0);
+  const dispatchedQty = Number(dispatchedAgg._sum.quantity ?? 0);
+
   const nextStatus: SalesOrderStatus =
-    activeReservedQty <= 0
-      ? SalesOrderStatus.Open
-      : activeReservedQty >= orderedQty
-        ? SalesOrderStatus.FullyReserved
-        : SalesOrderStatus.PartiallyReserved;
+    dispatchedQty >= orderedQty && orderedQty > 0
+      ? SalesOrderStatus.Dispatched
+      : dispatchedQty > 0
+        ? SalesOrderStatus.PartiallyDispatched
+        : activeReservedQty <= 0
+          ? SalesOrderStatus.Open
+          : activeReservedQty >= orderedQty
+            ? SalesOrderStatus.FullyReserved
+            : SalesOrderStatus.PartiallyReserved;
 
   if (nextStatus !== salesOrder.status) {
     await tx.salesOrder.update({ where: { id: salesOrderId }, data: { status: nextStatus } });

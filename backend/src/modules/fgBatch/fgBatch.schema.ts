@@ -89,6 +89,15 @@ export const fgReservationIdParamsSchema = z.object({
     .transform((val) => BigInt(val)),
 });
 
+// FG Module Part 4 — GET /api/fg-batches/dispatch-eligible. salesOrderId
+// here means "which Sales Order's reservations should be surfaced first" —
+// a read-side preference, NOT the same thing as listFgBatchesQuerySchema's
+// own salesOrderId (which filters Part 1's plain, now-superseded
+// fg_batches.sales_order_id column). See fgBatch.service.ts.
+export const listDispatchEligibleQuerySchema = paginationQuerySchema.extend({
+  salesOrderId: z.coerce.bigint().optional(),
+});
+
 export type GenerateFgBatchInput = z.infer<typeof generateFgBatchSchema>;
 export type ListFgBatchesQuery = z.infer<typeof listFgBatchesQuerySchema>;
 export type TransferFgBatchInput = z.infer<typeof transferFgBatchSchema>;
@@ -96,3 +105,4 @@ export type HoldFgBatchInput = z.infer<typeof holdFgBatchSchema>;
 export type ReleaseHoldFgBatchInput = z.infer<typeof releaseHoldFgBatchSchema>;
 export type ListFgMovementsQuery = z.infer<typeof listFgMovementsQuerySchema>;
 export type ReserveFgBatchInput = z.infer<typeof reserveFgBatchSchema>;
+export type ListDispatchEligibleQuery = z.infer<typeof listDispatchEligibleQuerySchema>;

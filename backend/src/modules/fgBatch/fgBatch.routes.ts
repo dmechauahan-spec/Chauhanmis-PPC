@@ -8,6 +8,7 @@ import {
   fgBatchNoParamsSchema,
   generateFgBatchSchema,
   holdFgBatchSchema,
+  listDispatchEligibleQuerySchema,
   listFgBatchesQuerySchema,
   listFgMovementsQuerySchema,
   releaseHoldFgBatchSchema,
@@ -32,6 +33,14 @@ const reservationsWrite = authorize(...PERMISSIONS.fgReservations.write);
 
 router.post('/generate', write, validateRequest({ body: generateFgBatchSchema }), controller.generate);
 router.get('/', read, validateRequest({ query: listFgBatchesQuerySchema }), controller.list);
+// FG Module Part 4 — MUST be registered before /:fgBatchNo below, or Express
+// would match "dispatch-eligible" as a literal fgBatchNo value instead.
+router.get(
+  '/dispatch-eligible',
+  read,
+  validateRequest({ query: listDispatchEligibleQuerySchema }),
+  controller.listDispatchEligible,
+);
 router.get('/:fgBatchNo', read, validateRequest({ params: fgBatchNoParamsSchema }), controller.getByNo);
 
 router.post(
