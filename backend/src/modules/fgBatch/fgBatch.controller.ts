@@ -63,6 +63,15 @@ export async function releaseHold(req: Request, res: Response, next: NextFunctio
   }
 }
 
+export async function reserve(req: Request, res: Response, next: NextFunction) {
+  try {
+    const batch = await fgBatchService.reserveFgBatch(req.params.fgBatchNo, req.body, req.user!.name);
+    sendSuccess(res, batch);
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function listMovements(req: Request, res: Response, next: NextFunction) {
   try {
     const result = await fgStockMovementService.listFgMovements(

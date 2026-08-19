@@ -7,11 +7,13 @@ import { round2 } from '../scheduling/schedulingEngine';
 import { buildDateSequencePrefix, generateWithRetry, isUniqueConstraintConflict, nextSequentialId } from '../../utils/sequentialIdGenerator';
 import { getQcInspectionById } from '../qcInspection/qcInspection.service';
 import { formatFgLocation, logFgMovement } from './fgStockMovement.service';
+import { recomputeSalesOrderStatus } from '../salesOrders/salesOrders.service';
 import {
   GenerateFgBatchInput,
   HoldFgBatchInput,
   ListFgBatchesQuery,
   ReleaseHoldFgBatchInput,
+  ReserveFgBatchInput,
   TransferFgBatchInput,
 } from './fgBatch.schema';
 
@@ -455,6 +457,94 @@ export async function releaseHoldFgBatch(
       performedBy,
       notes: input.notes,
     });
+    return result;
+  });
+
+  return toOutput(updated);
+}
+
+// FG Module Part 3 — POST /api/fg-batches/:fgBatchNo/reserve. Lives here
+// (not in fgReservation.service.ts) for the same reason transfer/hold do —
+// this is fundamentally an FgBatch state-changing action, reached via the
+// fg-batches path, with direct access to this file's own
+// getBareFgBatchOrThrow/toOutput/computeAvailableQty rather than importing
+// them. fgReservation.service.ts (the FgReservation entity's own file,
+// reached via the separate /api/fg-reservations and
+// /api/sales-orders/:salesOrderNo/reservations paths) imports
+// computeAvailableQty back from here for its own cancel action — see that
+// file's own comment on why the split is one-directional, not circular.
+//
+// **The partial-reservation-vs-stockStatus rule — read this before
+// touching stockStatus here.** A batch that still has SOME availableQty
+// left after this reservation is still `Available` for that remaining
+// quantity — reserving 30 out of a 100-unit batch does NOT flip the whole
+// batch to `Reserved`; only a reservation that brings availableQty to
+// exactly 0 does. `Reserved` means "nothing left to reserve", not "this
+// batch has at least one reservation against it". See README "FG Module
+// Part 3" for the full rationale.
+export async function reserveFgBatch(fgBatchNo: string, input: ReserveFgBatchInput, performedBy: string): Promise<FgBatchOutput> {
+  const batch = await getBareFgBatchOrThrow(fgBatchNo);
+
+  // Enforces Part 2's own flagged-but-unenforced rule ("a batch on Hold
+  // must NOT be reservable" — see holdFgBatch's comment above) — this is
+  // the first of the two places (this and dispatch, in Part 4) that rule
+  // actually gets checked, now that reservation exists as an endpoint.
+  if (batch.stockStatus === FgStockStatus.Hold) {
+    throw new BusinessRuleError(`FG batch '${fgBatchNo}' is on Hold and cannot be reserved.`, {
+      fgBatchNo,
+      stockStatus: batch.stockStatus,
+    });
+  }
+
+  const qcPassedQty = Number(batch.qcPassedQty);
+  const dispatchedQty = Number(batch.dispatchedQty);
+  const currentReservedQty = Number(batch.reservedQty);
+  const availableQty = computeAvailableQty({ qcPassedQty, reservedQty: currentReservedQty, dispatchedQty });
+
+  if (input.qty > availableQty) {
+    throw new BusinessRuleError(
+      `Cannot reserve ${input.qty} from FG batch '${fgBatchNo}' — only ${availableQty} is available.`,
+      { fgBatchNo, requestedQty: input.qty, availableQty },
+    );
+  }
+
+  const salesOrder = await prisma.salesOrder.findUnique({ where: { id: input.salesOrderId } });
+  if (!salesOrder) {
+    throw new NotFoundError('Sales order', input.salesOrderId.toString());
+  }
+
+  const nextReservedQty = round2(currentReservedQty + input.qty);
+  const nextAvailableQty = computeAvailableQty({ qcPassedQty, reservedQty: nextReservedQty, dispatchedQty });
+  // See the rule documented above the function: still Available unless this
+  // reservation used up every remaining unit.
+  const nextStockStatus = nextAvailableQty > 0 ? FgStockStatus.Available : FgStockStatus.Reserved;
+
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.fgReservation.create({
+      data: {
+        fgBatchId: batch.id,
+        salesOrderId: input.salesOrderId,
+        reservedQty: input.qty,
+        reservedBy: performedBy,
+      },
+    });
+
+    const result = await tx.fgBatch.update({
+      where: { id: batch.id },
+      data: { reservedQty: nextReservedQty, stockStatus: nextStockStatus },
+    });
+
+    await logFgMovement(tx, {
+      fgBatchId: batch.id,
+      movementType: FgMovementType.Reserved,
+      quantity: input.qty,
+      performedBy,
+    });
+
+    // Reusable — Part 4's dispatch will call this same function; see its
+    // own doc comment in salesOrders.service.ts.
+    await recomputeSalesOrderStatus(tx, input.salesOrderId);
+
     return result;
   });
 

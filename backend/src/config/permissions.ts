@@ -61,4 +61,17 @@ export const PERMISSIONS = {
   // release-hold, and reading the movement ledger. StoreManager write, all
   // roles read — see README "FG Module Part 2".
   fgStockMovements: { read: STORE_AND_PRODUCTION, write: STORE_ONLY },
+  // FG Module Part 3 — Sales Order master data. Admin/StoreManager write
+  // (StoreManager owns the inventory/fulfillment side of this module, same
+  // as fgStockMovements/fgReservations below), all roles read — see README
+  // "FG Module Part 3".
+  salesOrders: { read: STORE_AND_PRODUCTION, write: STORE_ONLY },
+  // FG Module Part 3 — reserve (POST /api/fg-batches/:fgBatchNo/reserve)
+  // and cancel (POST /api/fg-reservations/:id/cancel) are the same
+  // warehouse/inventory territory as fgStockMovements' transfer/hold, so
+  // they get the identical StoreManager-write split rather than reusing
+  // fgStockMovements itself — kept as its own entry since reservation and
+  // stock-movement actions are conceptually distinct, even though they
+  // currently resolve to the same roles.
+  fgReservations: { read: STORE_AND_PRODUCTION, write: STORE_ONLY },
 } as const;

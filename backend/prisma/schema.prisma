@@ -157,6 +157,33 @@ enum FgMovementType {
   Adjustment
 }
 
+// FG Module Part 3. A Sales Order's own fulfillment-progress state, derived
+// (never directly settable) from summing its Active FgReservations against
+// orderedQty — see `recomputeSalesOrderStatus` in salesOrders.service.ts.
+// PartiallyDispatched/Dispatched/Closed are not reachable yet — no dispatch
+// endpoint exists in this codebase until Part 4; declared now so the enum is
+// complete/stable from the start rather than migrated twice, same reasoning
+// as FgMovementType above.
+enum SalesOrderStatus {
+  Open
+  PartiallyReserved
+  FullyReserved
+  PartiallyDispatched
+  Dispatched
+  Closed
+}
+
+// FG Module Part 3. An FgReservation's own lifecycle: Active is the only
+// state a reservation is created in; Cancelled is set by POST
+// /api/fg-reservations/:id/cancel (this part); Fulfilled is reserved for
+// Part 4's dispatch to set once a reservation's stock has actually shipped
+// — not reachable by anything built in this part.
+enum FgReservationStatus {
+  Active
+  Cancelled
+  Fulfilled
+}
+
 // ============================================================================
 // 1. MODEL MASTER
 // ============================================================================
@@ -765,9 +792,14 @@ model Warehouse {
 // same "soft reference" pattern as Part 2/3's lineId/machineId/dailyLogId on
 // daily_production_plan/daily_qc_inspections (see those models' own
 // comments) — Part 2 of this module will build the actual warehouse-
-// assignment/transfer actions against it. `salesOrderId` has no relation at
-// all yet: no SalesOrder table exists in this codebase — it's accepted as a
-// plain optional reference for a future part to define.
+// assignment/transfer actions against it. `salesOrderId` STILL has no
+// relation, even now that FG Module Part 3 defines a real SalesOrder table
+// — it is effectively superseded, not wired up, by that part's
+// FgReservation join table instead (a batch can be split across several
+// Sales Orders, and a Sales Order fulfilled by several batches, which a
+// single FK here could never express). Left as-is (a plain, unenforced,
+// deprecated-in-practice field) rather than removed, to avoid an unrelated
+// breaking schema change — see README "FG Module Part 3".
 model FgBatch {
   id                BigInt           @id @default(autoincrement())
   fgBatchNo         String           @unique @map("fg_batch_no")
@@ -807,6 +839,10 @@ model FgBatch {
   order        Order             @relation(fields: [productionOrderId], references: [orderId])
   qcInspection DailyQcInspection @relation(fields: [qcInspectionId], references: [id])
   movements    FgStockMovement[]
+  // FG Module Part 3 — the real, quantity-aware link to Sales Orders (see
+  // SalesOrder/FgReservation's own comments for why this supersedes the
+  // plain salesOrderId field above rather than that field gaining an FK).
+  reservations FgReservation[]
 
   @@index([productionOrderId])
   @@index([warehouseId])
@@ -841,6 +877,59 @@ model FgStockMovement {
 
   @@index([fgBatchId])
   @@map("fg_stock_movements")
+}
+
+// FG Module Part 3 — a real entity, not just the plain unenforced
+// `fg_batches.sales_order_id` text/id reference Part 1 left as "a future
+// part to define" (see FgBatch's own comment above). One Sales Order can be
+// fulfilled by several FG batches over time, and partially at that — that's
+// exactly what FgReservation (a join row with its own quantity) exists to
+// track; `fg_batches.sales_order_id` itself is NOT wired to this table (no
+// FK added to FgBatch in this part — see README "FG Module Part 3" for why
+// that field is now effectively superseded by FgReservation rather than
+// reused). `status` is never directly settable by a caller — always
+// recomputed by `recomputeSalesOrderStatus` off the real reservation rows.
+model SalesOrder {
+  id           BigInt           @id @default(autoincrement())
+  salesOrderNo String           @unique @map("sales_order_no")
+  customer     String
+  sku          String
+  orderedQty   Decimal          @map("ordered_qty") @db.Decimal(12, 2)
+  status       SalesOrderStatus @default(Open)
+  dueDate      DateTime?        @map("due_date") @db.Date
+  createdBy    String           @map("created_by")
+  createdAt    DateTime         @default(now()) @map("created_at")
+
+  reservations FgReservation[]
+
+  @@map("sales_orders")
+}
+
+// FG Module Part 3 — the partial-reservation join row: one row per
+// "this much of this FG batch is set aside for this Sales Order" event.
+// `status` starts Active on every reservation (the only way one is ever
+// created) and moves to Cancelled via POST /api/fg-reservations/:id/cancel
+// (this part) or Fulfilled once Part 4's dispatch consumes it (not
+// reachable by anything built in this part). Never physically deleted —
+// Cancelled/Fulfilled rows stay as the historical record the client's
+// spec's "partial-fulfillment tracking" view (GET
+// /api/sales-orders/:salesOrderNo/reservations) reads.
+model FgReservation {
+  id           BigInt               @id @default(autoincrement())
+  fgBatchId    BigInt               @map("fg_batch_id")
+  salesOrderId BigInt               @map("sales_order_id")
+  reservedQty  Decimal              @map("reserved_qty") @db.Decimal(12, 2)
+  status       FgReservationStatus  @default(Active)
+  reservedBy   String               @map("reserved_by")
+  reservedAt   DateTime             @default(now()) @map("reserved_at")
+
+  fgBatch    FgBatch    @relation(fields: [fgBatchId], references: [id])
+  salesOrder SalesOrder @relation(fields: [salesOrderId], references: [id])
+
+  @@index([fgBatchId])
+  @@index([salesOrderId])
+  @@index([status])
+  @@map("fg_reservations")
 }
 
 // ============================================================================

@@ -59,6 +59,7 @@ tags:
   - name: Order Status Dashboard
   - name: Warehouses
   - name: FG Batches
+  - name: Sales Orders
 
 components:
   securitySchemes:
@@ -1337,6 +1338,50 @@ components:
         performedBy: { type: string, description: The authenticated caller's name — never client-supplied. }
         notes: { type: string, nullable: true }
         createdAt: { type: string, format: date-time }
+
+    SalesOrder:
+      type: object
+      description: >
+        FG Module Part 3. A real entity, superseding (not wired up to) FgBatch.salesOrderId — one
+        Sales Order can be fulfilled by several FG batches over time via FgReservation. See README
+        "FG Module Part 3".
+      properties:
+        id: { type: integer, readOnly: true }
+        salesOrderNo: { type: string, example: SO-1024, description: Client-supplied, unique. }
+        customer: { type: string }
+        sku: { type: string }
+        orderedQty: { type: number }
+        status:
+          type: string
+          readOnly: true
+          enum: [Open, PartiallyReserved, FullyReserved, PartiallyDispatched, Dispatched, Closed]
+          description: >
+            NEVER client-settable — not even accepted in the request body. Only recomputeSalesOrderStatus
+            (called from reserve/cancel) ever changes it. PartiallyDispatched/Dispatched/Closed are
+            declared but unreachable until Part 4.
+        dueDate: { type: string, format: date, nullable: true }
+        createdBy: { type: string, readOnly: true }
+        createdAt: { type: string, format: date-time, readOnly: true }
+
+    FgReservation:
+      type: object
+      readOnly: true
+      description: >
+        FG Module Part 3. The partial-reservation join row — one per "this much of this FG batch is
+        set aside for this Sales Order" event. Never physically deleted; Cancelled rows stay as the
+        historical record GET /sales-orders/{salesOrderNo}/reservations reads. See README "FG Module
+        Part 3".
+      properties:
+        id: { type: integer }
+        fgBatchId: { type: integer }
+        salesOrderId: { type: integer }
+        reservedQty: { type: number }
+        status:
+          type: string
+          enum: [Active, Cancelled, Fulfilled]
+          description: Fulfilled is declared now but unreachable until Part 4's dispatch.
+        reservedBy: { type: string, description: The authenticated caller's name — never client-supplied. }
+        reservedAt: { type: string, format: date-time }
 
 paths:
   /auth/login:
@@ -3637,6 +3682,162 @@ paths:
                   items:
                     type: array
                     items: { $ref: '#/components/schemas/FgStockMovement' }
+                  total: { type: integer }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+        '404': { description: Not found }
+
+  /fg-batches/{fgBatchNo}/reserve:
+    parameters:
+      - name: fgBatchNo
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [FG Batches]
+      summary: Reserve stock against a Sales Order
+      description: >
+        FG Module Part 3. Rejects (409) a Hold batch or qty > availableQty; 404 if salesOrderId
+        doesn't exist. Creates the FgReservation, increments reservedQty, logs a Reserved movement,
+        and recomputes both fgBatch.stockStatus and the parent SalesOrder.status (via
+        recomputeSalesOrderStatus) in one transaction. A batch with availableQty still > 0 after
+        this reservation stays Available — only availableQty reaching exactly 0 flips it to
+        Reserved. See README "FG Module Part 3". Requires Admin/StoreManager.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [salesOrderId, qty]
+              properties:
+                salesOrderId: { type: integer }
+                qty: { type: number, exclusiveMinimum: 0 }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FgBatch' }
+        '404': { description: Unknown fgBatchNo or salesOrderId }
+        '409': { description: 'The batch is on Hold, or qty > availableQty' }
+
+  /fg-reservations/{id}/cancel:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [FG Batches]
+      summary: Release a reservation
+      description: >
+        FG Module Part 3. Only allowed while status = Active. Decrements fgBatch.reservedQty,
+        logs an Unreserved movement, recomputes fgBatch.stockStatus (preserved as Hold, never
+        silently cleared, if the batch is currently on Hold) and the parent SalesOrder.status.
+        See README "FG Module Part 3". Requires Admin/StoreManager.
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FgReservation' }
+        '404': { description: Not found }
+        '409': { description: Already Cancelled or Fulfilled }
+
+  /sales-orders:
+    get:
+      tags: [Sales Orders]
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: customer
+          in: query
+          schema: { type: string }
+        - name: sku
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string, enum: [Open, PartiallyReserved, FullyReserved, PartiallyDispatched, Dispatched, Closed] }
+      responses:
+        '200': { description: Paginated list of Sales Orders }
+    post:
+      tags: [Sales Orders]
+      description: FG Module Part 3. Requires Admin/StoreManager. status is not accepted in the body — always starts Open.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SalesOrder' }
+      responses:
+        '201': { description: Created }
+        '400': { description: Validation error }
+        '409': { description: Duplicate salesOrderNo (generic P2002 mapping) }
+
+  /sales-orders/{salesOrderNo}:
+    parameters:
+      - name: salesOrderNo
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Sales Orders]
+      responses:
+        '200':
+          description: Sales Order
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SalesOrder' }
+        '404': { description: Not found }
+    patch:
+      tags: [Sales Orders]
+      description: FG Module Part 3. Requires Admin/StoreManager. status is not accepted here either.
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SalesOrder' }
+      responses:
+        '200': { description: Updated }
+        '400': { description: No fields provided }
+        '404': { description: Not found }
+    delete:
+      tags: [Sales Orders]
+      description: >
+        FG Module Part 3. Hard delete, requires Admin/StoreManager. Unlike warehouseId,
+        FgReservation.salesOrderId IS a real DB-level FK with no cascade — fails with 400 while any
+        reservation (even Cancelled) still references this Sales Order.
+      responses:
+        '200': { description: Deleted }
+        '400': { description: A reservation (active or historical) still references this Sales Order }
+        '404': { description: Not found }
+
+  /sales-orders/{salesOrderNo}/reservations:
+    parameters:
+      - name: salesOrderNo
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Sales Orders]
+      summary: The partial-fulfillment tracking view
+      description: >
+        FG Module Part 3. Every reservation (Active and historical) against this Sales Order,
+        across whichever FG batches fulfilled it, oldest first. See README "FG Module Part 3".
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+      responses:
+        '200':
+          description: Paginated list of FgReservation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/FgReservation' }
                   total: { type: integer }
                   page: { type: integer }
                   pageSize: { type: integer }

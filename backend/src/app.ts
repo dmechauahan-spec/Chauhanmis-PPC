@@ -31,6 +31,8 @@ import dashboardRouter from './modules/dashboard/dashboard.routes';
 import orderStatusDashboardRouter from './modules/orderStatusDashboard/orderStatusDashboard.routes';
 import warehousesRouter from './modules/warehouses/warehouses.routes';
 import fgBatchRouter from './modules/fgBatch/fgBatch.routes';
+import fgReservationRouter from './modules/fgBatch/fgReservation.routes';
+import salesOrdersRouter from './modules/salesOrders/salesOrders.routes';
 import authRouter from './modules/auth/auth.routes';
 
 installBigIntJsonSupport();
@@ -82,6 +84,8 @@ export function createApp(): Express {
   app.use('/api/order-status-dashboard', orderStatusDashboardRouter);
   app.use('/api/warehouses', warehousesRouter);
   app.use('/api/fg-batches', fgBatchRouter);
+  app.use('/api/fg-reservations', fgReservationRouter);
+  app.use('/api/sales-orders', salesOrdersRouter);
   app.use('/api/auth', authRouter);
 
   app.use(notFoundHandler);

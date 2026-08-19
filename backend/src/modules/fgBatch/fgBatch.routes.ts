@@ -11,6 +11,7 @@ import {
   listFgBatchesQuerySchema,
   listFgMovementsQuerySchema,
   releaseHoldFgBatchSchema,
+  reserveFgBatchSchema,
   transferFgBatchSchema,
 } from './fgBatch.schema';
 
@@ -24,6 +25,10 @@ const write = authorize(...PERMISSIONS.fgBatch.write);
 // write above — see README "FG Module Part 2" / permissions.ts.
 const movementsRead = authorize(...PERMISSIONS.fgStockMovements.read);
 const movementsWrite = authorize(...PERMISSIONS.fgStockMovements.write);
+// FG Module Part 3 — reserve is the same warehouse/inventory territory as
+// transfer/hold above, using its own fgReservations permission entry (kept
+// distinct from fgStockMovements — see permissions.ts's own comment).
+const reservationsWrite = authorize(...PERMISSIONS.fgReservations.write);
 
 router.post('/generate', write, validateRequest({ body: generateFgBatchSchema }), controller.generate);
 router.get('/', read, validateRequest({ query: listFgBatchesQuerySchema }), controller.list);
@@ -52,6 +57,12 @@ router.get(
   movementsRead,
   validateRequest({ params: fgBatchNoParamsSchema, query: listFgMovementsQuerySchema }),
   controller.listMovements,
+);
+router.post(
+  '/:fgBatchNo/reserve',
+  reservationsWrite,
+  validateRequest({ params: fgBatchNoParamsSchema, body: reserveFgBatchSchema }),
+  controller.reserve,
 );
 
 export default router;

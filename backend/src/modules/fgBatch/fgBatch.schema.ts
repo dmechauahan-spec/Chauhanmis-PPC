@@ -70,9 +70,29 @@ export const releaseHoldFgBatchSchema = z.object({
 
 export const listFgMovementsQuerySchema = paginationQuerySchema;
 
+// FG Module Part 3 — POST /api/fg-batches/:fgBatchNo/reserve. qty is
+// validated as > 0 here; the qty <= availableQty check (which needs the
+// batch's own current state) happens in fgBatch.service.ts, same split as
+// generate's warehouseId existence check.
+export const reserveFgBatchSchema = z.object({
+  salesOrderId: z.coerce.bigint({ message: 'salesOrderId must be a valid integer id' }),
+  qty: z.coerce.number().positive('qty must be greater than 0'),
+});
+
+// FG Module Part 3 — POST /api/fg-reservations/:id/cancel. Same strict
+// digit-string -> BigInt transform as qcInspection.schema.ts's idParamsSchema
+// (not z.coerce.bigint(), which is for body fields, not path params).
+export const fgReservationIdParamsSchema = z.object({
+  id: z
+    .string()
+    .regex(/^\d+$/, 'id must be a positive integer')
+    .transform((val) => BigInt(val)),
+});
+
 export type GenerateFgBatchInput = z.infer<typeof generateFgBatchSchema>;
 export type ListFgBatchesQuery = z.infer<typeof listFgBatchesQuerySchema>;
 export type TransferFgBatchInput = z.infer<typeof transferFgBatchSchema>;
 export type HoldFgBatchInput = z.infer<typeof holdFgBatchSchema>;
 export type ReleaseHoldFgBatchInput = z.infer<typeof releaseHoldFgBatchSchema>;
 export type ListFgMovementsQuery = z.infer<typeof listFgMovementsQuerySchema>;
+export type ReserveFgBatchInput = z.infer<typeof reserveFgBatchSchema>;

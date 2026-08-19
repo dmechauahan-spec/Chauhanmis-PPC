@@ -2141,11 +2141,134 @@ already pointed forward to: transfer, hold, and release-hold are inventory/wareh
 `StoreManager` (not `ProductionManager`) can write them, while both roles can still read everything
 as usual.
 
+### FG Module Part 3 — Sales Order + Reservation
+
+Builds the real `SalesOrder` entity and the reservation system the client's spec asks for:
+
+> *"FG stock ko manually simple quantity entry ke roop mein na banaya jaye... FG should be...
+> linked with... Sales Order..."*
+
+...and specifically, stock reservable **against a specific Sales Order, with partial reservation
+support**, with reserved quantity excluded from what other orders can draw against. A real
+`SalesOrder` row (not just the plain text/id field Part 1 left on `FgBatch`) is required because one
+Sales Order can be fulfilled by several FG batches over time, and partially at that — a plain
+one-to-one FK could never express that, only a real join table with its own quantity can.
+
+**`fg_batches.sales_order_id` is now effectively superseded, not wired up.** Part 1 explicitly left
+this field with no relation, "accepted as a plain optional reference for a future part to define."
+This part is that future part, and the decision is: **don't reuse it.** A single `salesOrderId` on
+`FgBatch` can express at most "this whole batch belongs to one Sales Order" — exactly the
+one-batch-to-one-order shape this part's own requirement (several batches per order, partial
+quantities) rules out. The real relationship lives entirely in the new `FgReservation` join table
+instead (`fgBatchId` + `salesOrderId` + its own `reservedQty`), which can express many-to-many with
+quantities. `fg_batches.sales_order_id` is left in the schema as-is (unused, no FK added) rather than
+removed, to avoid an unrelated breaking schema change in this pass — see `prisma/schema.prisma`'s own
+comment on the `FgBatch` model.
+
+**`sales_orders` — a small new entity, full CRUD at `/api/sales-orders`.** `salesOrderNo` (client-
+supplied, unique — same convention as `warehouseId`/`orderId`/`teamId`, see "Assumptions" below),
+`customer`, `sku`, `orderedQty`, `dueDate?`, `status` (see below), `createdBy`/`createdAt`. `status`
+is **never accepted in the create/update request body** — it isn't even in the Zod shape, so a
+caller sending it is silently stripped, not rejected — the only way it ever changes is
+`recomputeSalesOrderStatus` (below), called from inside this part's own reserve/cancel transactions.
+Delete is a hard delete, same convention as Warehouses/Machines/Lines — but unlike `warehouseId` (a
+plain, unenforced string on `FgBatch`), `FgReservation.salesOrderId` **is** a real DB-level FK with
+no `onDelete: Cascade`, so deleting a Sales Order that any reservation — even a `Cancelled` one —
+still references correctly fails (`400`, the generic P2003 mapping in `errorHandler.ts`) rather than
+silently orphaning or cascading away that reservation history.
+
+**`fg_reservations` — the partial-reservation join row.** One row per "this much of this FG batch is
+set aside for this Sales Order" event: `fgBatchId`, `salesOrderId`, `reservedQty`, `status`
+(`Active`/`Cancelled`/`Fulfilled`), `reservedBy`, `reservedAt`. Never physically deleted —
+`Cancelled` rows stay as the historical record `GET /api/sales-orders/:salesOrderNo/reservations`
+(below) reads. `Fulfilled` is declared now but unreachable by anything in this part — it's Part 4's
+dispatch that will eventually move a reservation there.
+
+**`POST /api/fg-batches/:fgBatchNo/reserve` — read this before touching `stockStatus` here.** Body:
+`{ salesOrderId, qty }`. In order: (1) rejects (`409`) a batch currently on `Hold` — this is the
+first of the two places (this, and Part 4's dispatch) that Part 2's own flagged-but-until-now-
+unenforceable rule ("a batch on Hold must not be reservable") actually gets checked; (2) rejects
+(`409`) `qty > availableQty` (Part 1's `computeAvailableQty`, reused, not recomputed); (3) `404` if
+`salesOrderId` doesn't exist. Then, in one transaction: creates the `FgReservation` row, increments
+`fgBatch.reservedQty` by `qty`, logs a `Reserved` movement (Part 2's `logFgMovement`, `quantity:
+qty`), and recomputes `fgBatch.stockStatus`.
+
+**The partial-reservation-vs-`stockStatus` rule.** A batch that still has *some* `availableQty` left
+after this reservation is **still `Available`** for that remaining quantity — reserving 30 out of a
+100-unit batch does **not** flip the whole batch to `Reserved`. Only a reservation that brings
+`availableQty` to **exactly 0** does. `Reserved` means "nothing left to reserve", not "this batch has
+at least one reservation against it" — the same distinction Part 2's `hold`/`release-hold` already
+respects for a different axis of batch state. Get this backwards and every batch with any reservation
+at all becomes falsely unavailable for the rest of its own free stock.
+
+**`recomputeSalesOrderStatus(tx, salesOrderId)` — the reusable status-recompute function**
+(`salesOrders.service.ts`). Sums every `Active` `FgReservation.reservedQty` for that Sales Order and
+compares it to `orderedQty`: `0` → `Open`, `some but < orderedQty` → `PartiallyReserved`, `>=
+orderedQty` → `FullyReserved`. **Always** takes a transaction client and is **always** called from
+inside the same `prisma.$transaction` as the `FgReservation` write that changed the picture — a Sales
+Order's status must never observably lag behind its own reservations, same "atomic ledger + state"
+discipline as Part 2's `logFgMovement`. Built as a small, standalone, reusable function from the
+start specifically because **Part 4's dispatch will need to call it too** once dispatch starts
+consuming reservations — this is not a private helper inlined into `reserveFgBatch`.
+
+> **⚠️ Scope note for Part 4, flagged here on purpose:** this function only knows about
+> `Open`/`PartiallyReserved`/`FullyReserved`, computed purely from the *Active* reservation sum.
+> `PartiallyDispatched`/`Dispatched`/`Closed` are declared on the `SalesOrderStatus` enum but **not**
+> set by this function and are unreachable by anything built in this part. Once Part 4 starts moving
+> reservations to `Fulfilled` (which shrinks the Active sum this function reads), a naive re-call of
+> this exact function could wrongly *demote* a Sales Order's status after dispatch has already begun
+> — Part 4 needs its own additional logic layered on top of, or a documented interaction with, this
+> function, not an assumption that calling it unchanged is still safe once dispatch exists.
+
+**`POST /api/fg-reservations/:id/cancel` — releases a reservation.** Only allowed while `status =
+'Active'`; rejects (`409`) an already-`Cancelled`/`Fulfilled` one with a clear message, same
+stale-view reasoning as Part 2's `hold`/`release-hold` guards, rather than silently no-op'ing. In one
+transaction: sets `status = 'Cancelled'`, decrements `fgBatch.reservedQty` by the reservation's own
+`reservedQty` (floored at 0 defensively), logs an `Unreserved` movement, recomputes the batch's
+`stockStatus`, and recomputes the parent `SalesOrder.status` via the same reusable function above.
+
+**The Hold-preserving nuance on cancel — not explicit in the original brief, follows directly from
+Part 2's own Hold design.** A batch can accumulate reservations, then later get put on `Hold` (Part
+2's `hold` action doesn't check `reservedQty` before setting `stockStatus = 'Hold'`). If one of that
+batch's reservations is then cancelled, `stockStatus` must **not** silently flip back to
+`Available`/`Reserved` — it stays `Hold`, exactly mirroring `release-hold`'s own "recompute the
+correct post-release status from `reservedQty`, don't just default" logic in reverse. Only a real
+`release-hold` call ever clears `Hold`; cancelling a reservation just frees up the quantity for
+whenever that eventually happens. `fgReservation.test.ts` asserts this directly (`cancelling a
+reservation on a Held batch frees the quantity but leaves stockStatus as Hold`).
+
+**`GET /api/sales-orders/:salesOrderNo/reservations` — the partial-fulfillment tracking view.** Every
+reservation — `Active` *and* historical (`Cancelled`/`Fulfilled`) — against this Sales Order, across
+whichever FG batches fulfilled it, oldest first (same "true chronological history" convention as the
+stock-movement ledger). This is the concrete answer to "one Sales Order fulfilled by multiple FG
+batches over time" — `fgReservation.test.ts`'s own multi-batch scenario reserves against one Sales
+Order from two separate batches and reads this endpoint back to confirm all three reservations show
+up, in order, surviving two of them later being cancelled.
+
+**The reserve/cancel folder split.** `reserveFgBatch` lives in `fgBatch.service.ts` (Part 1/2's own
+file) rather than a new file — it's fundamentally an `FgBatch`-mutating action reached via
+`/api/fg-batches/:fgBatchNo/reserve`, same as Part 2's `transfer`/`hold`, with direct access to that
+file's own `getBareFgBatchOrThrow`/`toOutput`/`computeAvailableQty`. `cancelReservation` and
+`listReservationsForSalesOrder`, by contrast, live in a new `fgBatch/fgReservation.service.ts` — the
+`FgReservation` entity's own file, reached via the separate `/api/fg-reservations` and
+`/api/sales-orders/:salesOrderNo/reservations` paths. That file imports `computeAvailableQty` back
+from `fgBatch.service.ts` (one-directional — `fgBatch.service.ts` never imports anything from
+`fgReservation.service.ts`), so "how much is actually free" still has exactly one implementation,
+reused by both reserve and cancel.
+
+**Permissions.** Two **new** entries. `salesOrders` (`read: STORE_AND_PRODUCTION`, `write:
+STORE_ONLY`) for Sales Order CRUD — `StoreManager` owns the inventory/fulfillment side of this
+module, same as `fgStockMovements`. `fgReservations` (`read: STORE_AND_PRODUCTION`, `write:
+STORE_ONLY`) for reserve/cancel — kept as its own entry rather than reusing `fgStockMovements`, since
+reservation and stock-movement actions are conceptually distinct even though they currently resolve
+to identical roles.
+
 ## Assumptions
 
-- Client-supplied primary keys (`modelId`, `lineId`, `teamId`, `orderId`, `partId`) are provided by
-  the caller (matching the sheet-derived `MDL-8074` / `L1` / `HR1` / `SO-1014` style codes), not
-  auto-generated by the server.
+- Client-supplied primary keys (`modelId`, `lineId`, `teamId`, `orderId`, `partId`, and (FG Module
+  Part 3) `salesOrderNo`, alongside `warehouseId` from Part 1) are provided by the caller (matching
+  the sheet-derived `MDL-8074` / `L1` / `HR1` / `SO-1014` style codes), not auto-generated by the
+  server.
 - `PATCH` endpoints for master-data resources accept a partial body (any subset of fields); at
   least one field is required or the request is rejected as a validation error.
 - HR team `lineId` and BOM `partId`/`modelRef` foreign-key checks return `400 Validation failed`
