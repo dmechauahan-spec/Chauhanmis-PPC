@@ -791,21 +791,22 @@ model Warehouse {
 // `warehouseId` is a plain, service-validated string, not a DB-level FK —
 // same "soft reference" pattern as Part 2/3's lineId/machineId/dailyLogId on
 // daily_production_plan/daily_qc_inspections (see those models' own
-// comments) — Part 2 of this module will build the actual warehouse-
-// assignment/transfer actions against it. `salesOrderId` STILL has no
-// relation, even now that FG Module Part 3 defines a real SalesOrder table
-// — it is effectively superseded, not wired up, by that part's
-// FgReservation join table instead (a batch can be split across several
-// Sales Orders, and a Sales Order fulfilled by several batches, which a
-// single FK here could never express). Left as-is (a plain, unenforced,
-// deprecated-in-practice field) rather than removed, to avoid an unrelated
-// breaking schema change — see README "FG Module Part 3".
+// comments) — Part 2 of this module built the actual warehouse-
+// assignment/transfer actions against it. There is deliberately NO
+// salesOrderId field on this model — Part 1 originally shipped one, but a
+// single FK here could never express "a batch split across several Sales
+// Orders" or "a Sales Order fulfilled by several batches," so FG Module
+// Part 3 built the real many-to-many relationship as the FgReservation join
+// table instead and left the old field unwired. It was genuinely never
+// wired to anything (no code path ever read it), so once Part 3/4 proved
+// FgReservation was the actual source of truth, it was dropped outright
+// rather than kept as permanent dead weight — see README "FG Module Part 5
+// — cleanup" for the migration.
 model FgBatch {
   id                BigInt           @id @default(autoincrement())
   fgBatchNo         String           @unique @map("fg_batch_no")
   productionOrderId String           @map("production_order_id")
   qcInspectionId    BigInt           @unique @map("qc_inspection_id")
-  salesOrderId      BigInt?          @map("sales_order_id")
   customer          String?
   productName       String           @map("product_name")
   sku               String
@@ -840,8 +841,9 @@ model FgBatch {
   qcInspection DailyQcInspection @relation(fields: [qcInspectionId], references: [id])
   movements    FgStockMovement[]
   // FG Module Part 3 — the real, quantity-aware link to Sales Orders (see
-  // SalesOrder/FgReservation's own comments for why this supersedes the
-  // plain salesOrderId field above rather than that field gaining an FK).
+  // SalesOrder/FgReservation's own comments for why this replaced the
+  // original plain salesOrderId field, since removed — see this model's own
+  // comment above).
   reservations FgReservation[]
   // FG Module Part 4 — every dispatch event that has drawn stock from this
   // batch (see FgDispatchLineItem's own comment).
@@ -883,15 +885,14 @@ model FgStockMovement {
 }
 
 // FG Module Part 3 — a real entity, not just the plain unenforced
-// `fg_batches.sales_order_id` text/id reference Part 1 left as "a future
-// part to define" (see FgBatch's own comment above). One Sales Order can be
-// fulfilled by several FG batches over time, and partially at that — that's
-// exactly what FgReservation (a join row with its own quantity) exists to
-// track; `fg_batches.sales_order_id` itself is NOT wired to this table (no
-// FK added to FgBatch in this part — see README "FG Module Part 3" for why
-// that field is now effectively superseded by FgReservation rather than
-// reused). `status` is never directly settable by a caller — always
-// recomputed by `recomputeSalesOrderStatus` off the real reservation rows.
+// `fg_batches.sales_order_id` text/id reference Part 1 originally left as
+// "a future part to define" (see FgBatch's own comment above — that column
+// was dropped entirely in Part 5's cleanup, once FgReservation had proven
+// out as the real mechanism). One Sales Order can be fulfilled by several FG
+// batches over time, and partially at that — that's exactly what
+// FgReservation (a join row with its own quantity) exists to track.
+// `status` is never directly settable by a caller — always recomputed by
+// `recomputeSalesOrderStatus` off the real reservation rows.
 model SalesOrder {
   id           BigInt           @id @default(autoincrement())
   salesOrderNo String           @unique @map("sales_order_no")
@@ -939,7 +940,8 @@ model FgReservation {
 
 // FG Module Part 4 — one dispatch EVENT, which can cover several FG batches
 // in a single transaction (see FgDispatchLineItem). `salesOrderId` — unlike
-// the same-named, deliberately-unwired field Part 1 left on FgBatch — DOES
+// the same-named, deliberately-unwired field FgBatch originally carried
+// (removed in Part 5's cleanup — see that model's own comment) — DOES
 // get a real relation here: a dispatch genuinely belongs to at most one real
 // Sales Order (or none, for general/unaffiliated stock movement), so there's
 // no many-to-many shape to worry about the way there was for FgBatch <->

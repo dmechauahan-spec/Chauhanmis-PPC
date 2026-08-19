@@ -95,7 +95,6 @@ export interface FgBatchOutput {
   fgBatchNo: string;
   productionOrderId: string;
   qcInspectionId: bigint;
-  salesOrderId: bigint | null;
   customer: string | null;
   productName: string;
   sku: string;
@@ -158,7 +157,6 @@ function toOutput(row: FgBatchBare): FgBatchOutput {
     fgBatchNo: row.fgBatchNo,
     productionOrderId: row.productionOrderId,
     qcInspectionId: row.qcInspectionId,
-    salesOrderId: row.salesOrderId,
     customer: row.customer,
     productName: row.productName,
     sku: row.sku,
@@ -299,7 +297,6 @@ export async function generateFgBatch(input: GenerateFgBatchInput, createdBy: st
               fgBatchNo,
               productionOrderId: inspection.orderId,
               qcInspectionId: inspection.id,
-              salesOrderId: input.salesOrderId,
               customer: order.client,
               productName: order.product,
               sku: order.sku,
@@ -356,7 +353,6 @@ export async function generateFgBatch(input: GenerateFgBatchInput, createdBy: st
 export async function listFgBatches(query: ListFgBatchesQuery): Promise<PaginatedResult<FgBatchOutput>> {
   const where: Prisma.FgBatchWhereInput = {};
   if (query.productionOrderId) where.productionOrderId = query.productionOrderId;
-  if (query.salesOrderId !== undefined) where.salesOrderId = query.salesOrderId;
   if (query.warehouseId) where.warehouseId = query.warehouseId;
   if (query.qcStatus) where.qcStatus = query.qcStatus;
   if (query.stockStatus) where.stockStatus = query.stockStatus;

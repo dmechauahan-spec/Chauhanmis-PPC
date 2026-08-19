@@ -2170,9 +2170,11 @@ This part is that future part, and the decision is: **don't reuse it.** A single
 one-batch-to-one-order shape this part's own requirement (several batches per order, partial
 quantities) rules out. The real relationship lives entirely in the new `FgReservation` join table
 instead (`fgBatchId` + `salesOrderId` + its own `reservedQty`), which can express many-to-many with
-quantities. `fg_batches.sales_order_id` is left in the schema as-is (unused, no FK added) rather than
-removed, to avoid an unrelated breaking schema change in this pass — see `prisma/schema.prisma`'s own
-comment on the `FgBatch` model.
+quantities. `fg_batches.sales_order_id` was left in the schema as-is (unused, no FK added) at the
+time rather than removed, to avoid an unrelated breaking schema change in this pass — **it was
+later dropped outright, once FgReservation had proven out as the real mechanism with no code path
+ever reading the old column; see the "FG Module Part 5 — cleanup" section below for that
+migration.**
 
 **`sales_orders` — a small new entity, full CRUD at `/api/sales-orders`.** `salesOrderNo` (client-
 supplied, unique — same convention as `warehouseId`/`orderId`/`teamId`, see "Assumptions" below),
@@ -2287,8 +2289,9 @@ reimplementation of any of them.
 (`dispatchNo`, `salesOrderId?`, `dispatchDate` — always today, no override accepted — `dispatchedBy`,
 `notes?`) is the event; `FgDispatchLineItem` (`dispatchId`, `fgBatchId`, `quantity`) is what actually
 lets one event cover several batches, one row per batch drawn on. Unlike `fg_batches.sales_order_id`
-(the plain, deliberately-unwired field Part 1 left and Part 3 explicitly superseded rather than
-reused), `FgDispatch.salesOrderId` **does** get a real FK to `SalesOrder` — a dispatch genuinely
+(the plain, deliberately-unwired field Part 1 originally left and Part 3 explicitly superseded
+rather than reused, later dropped outright in Part 5's cleanup), `FgDispatch.salesOrderId` **does**
+get a real FK to `SalesOrder` — a dispatch genuinely
 belongs to at most one real Sales Order (or none, for general/unaffiliated stock movement), so
 there's no many-to-many shape here the way there was for `FgBatch` <-> `SalesOrder` (that's what the
 join tables, `FgReservation` and `FgDispatchLineItem`, are for). No `onDelete: Cascade` on that FK —
@@ -2506,15 +2509,36 @@ Flow Part 5's own closing note makes for that addition:
 | 9 | A summary dashboard (stock on hand, QC pending/passed/hold, rejected/rework, dispatch-ready, warehouse-wise and product/grade-wise stock) | **Part 5**'s `GET /api/fg-dashboard` (this section) |
 | 10 | Full batch traceability: FG Batch → Production → BOM/Product → QC → Warehouse → Reservation → Dispatch | **Part 5**'s `GET /api/fg-batches/:fgBatchNo/trace` (this section) |
 
-**Nothing from this ten-point list is left uncovered.** The two items worth flagging explicitly
-rather than silently treating as fully resolved: (a) `qcStatus = Hold` (item 5's *QC-side* hold,
+**Nothing from this ten-point list is left uncovered.** One item still worth flagging explicitly
+rather than silently treating as fully resolved: `qcStatus = Hold` (item 5's *QC-side* hold,
 distinct from Part 2's *inventory-side* hold this module actually built) remains declared on
 `FgQcStatus` but unreachable by any endpoint in this module — see "FG Module Part 1"'s own comment
 on this — a real gap if the client's "Hold" language meant a QC-driven hold rather than a
-warehouse-driven one, worth confirming rather than assuming; (b) `fg_batches.sales_order_id` (item
-1's original "linked with... Sales Order" wording) is superseded, not wired up, by Part 3's real
-`FgReservation` join table — see "FG Module Part 3" — the requirement is still met, just through a
-different, more expressive mechanism than a single FK.
+warehouse-driven one, worth confirming rather than assuming.
+
+### FG Module Part 5 — cleanup: dropped `fg_batches.sales_order_id`
+
+Item 1's original "linked with... Sales Order" wording was flagged in earlier drafts of this
+section as met only indirectly — `fg_batches.sales_order_id` (Part 1's original field) sat
+unwired alongside Part 3's real `FgReservation` join table, which is what actually implements the
+requirement. With Part 3/4 long since proven out and **no code path anywhere in this codebase ever
+reading that column** (confirmed by a full-repo search before removing it), keeping it around was
+pure dead weight, not a hedge against some future use — so it was dropped outright rather than left
+as permanent unused schema surface:
+
+- **Migration** `drop_fg_batches_sales_order_id` — a single `ALTER TABLE fg_batches DROP COLUMN
+  sales_order_id`, applied cleanly against the live dev database.
+- **Removed from**: the `FgBatch` Prisma model itself; `FgBatchOutput`/`toOutput` in
+  `fgBatch.service.ts`; the `salesOrderId` input on `generateFgBatchSchema` (it was never anything
+  more than a pass-through to the now-gone column) and the `salesOrderId` filter on
+  `listFgBatchesQuerySchema`; the corresponding `openapi.yaml` properties/query params. Every other
+  `salesOrderId` in this module — `FgReservation.salesOrderId`, `FgDispatch.salesOrderId`, the
+  `reserve`/`dispatch`/`dispatch-eligible` endpoints' own `salesOrderId` body/query fields — is a
+  **different, still-live, correctly-wired field** on a different model and was left untouched.
+- The requirement itself was never actually at risk — `FgReservation` (Part 3) and
+  `FgDispatch.salesOrderId` (Part 4) are, and always were, the real, load-bearing link between an
+  FG batch and a Sales Order. This cleanup only removes a column that had been dead since the day
+  it was written.
 
 The **frontend UI** for the FG Module — Parts 1 through 5 alike — is explicitly **out of scope**
 for this backend work and is a separate, later set of prompts, same as the Client Flow addition's

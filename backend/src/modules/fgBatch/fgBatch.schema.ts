@@ -27,7 +27,6 @@ export const generateFgBatchSchema = z.object({
   qcInspectionId: z.coerce.bigint({ message: 'qcInspectionId must be a valid integer id' }),
   warehouseId: z.string().min(1).optional(),
   rackBinLocation: z.string().min(1).optional(),
-  salesOrderId: z.coerce.bigint().optional(),
   // Defaults to the QC inspection's own inspectionDate if omitted — see
   // fgBatch.service.ts. Accepted as an override since actual production can
   // predate the day QC certified it.
@@ -40,7 +39,6 @@ export const generateFgBatchSchema = z.object({
 
 export const listFgBatchesQuerySchema = paginationQuerySchema.extend({
   productionOrderId: z.string().optional(),
-  salesOrderId: z.coerce.bigint().optional(),
   warehouseId: z.string().optional(),
   qcStatus: fgQcStatusEnum.optional(),
   stockStatus: fgStockStatusEnum.optional(),
@@ -91,9 +89,9 @@ export const fgReservationIdParamsSchema = z.object({
 
 // FG Module Part 4 — GET /api/fg-batches/dispatch-eligible. salesOrderId
 // here means "which Sales Order's reservations should be surfaced first" —
-// a read-side preference, NOT the same thing as listFgBatchesQuerySchema's
-// own salesOrderId (which filters Part 1's plain, now-superseded
-// fg_batches.sales_order_id column). See fgBatch.service.ts.
+// a read-side sort preference against FgReservation, not a filter on
+// FgBatch itself (fg_batches has no salesOrderId column of its own — see
+// README "FG Module Part 5"). See fgBatch.service.ts.
 export const listDispatchEligibleQuerySchema = paginationQuerySchema.extend({
   salesOrderId: z.coerce.bigint().optional(),
 });

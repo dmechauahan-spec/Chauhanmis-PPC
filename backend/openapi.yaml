@@ -1253,7 +1253,6 @@ components:
         fgBatchNo: { type: string, readOnly: true, example: FG-20260818-01, description: Generated via the shared sequential-id scheme (Module 3/9), sequenced off productionDate. }
         productionOrderId: { type: string, readOnly: true, description: Always derived from the QC inspection's own order — never client-supplied. }
         qcInspectionId: { type: integer, readOnly: true, description: 'Unique: an inspection can produce at most one FG batch, ever.' }
-        salesOrderId: { type: integer, nullable: true, description: No SalesOrder table exists yet in this codebase — plain optional reference for a future part. }
         customer: { type: string, nullable: true, readOnly: true, description: order.client at generation time. }
         productName: { type: string, readOnly: true, description: order.product at generation time. }
         sku: { type: string, readOnly: true, description: order.sku at generation time. }
@@ -1344,9 +1343,9 @@ components:
     SalesOrder:
       type: object
       description: >
-        FG Module Part 3. A real entity, superseding (not wired up to) FgBatch.salesOrderId — one
-        Sales Order can be fulfilled by several FG batches over time via FgReservation. See README
-        "FG Module Part 3".
+        FG Module Part 3. A real entity, replacing the plain unwired salesOrderId field FgBatch
+        originally carried (removed in Part 5's cleanup) — one Sales Order can be fulfilled by
+        several FG batches over time via FgReservation. See README "FG Module Part 3".
       properties:
         id: { type: integer, readOnly: true }
         salesOrderNo: { type: string, example: SO-1024, description: Client-supplied, unique. }
@@ -1390,8 +1389,9 @@ components:
       type: object
       description: >
         FG Module Part 4. One dispatch EVENT, which can cover several FG batches via its lineItems
-        (see FgDispatchLineItem). salesOrderId, unlike the deliberately-unwired FgBatch.salesOrderId,
-        gets a real FK to SalesOrder. See README "FG Module Part 4".
+        (see FgDispatchLineItem). salesOrderId, unlike the deliberately-unwired field FgBatch
+        originally carried (removed in Part 5's cleanup), gets a real FK to SalesOrder. See README
+        "FG Module Part 4".
       properties:
         id: { type: integer, readOnly: true }
         dispatchNo: { type: string, readOnly: true, example: DSP-20260819-01, description: Generated via the shared sequential-id scheme, sequenced off today (dispatchDate has no override field). }
@@ -3714,7 +3714,6 @@ paths:
                 qcInspectionId: { type: integer, example: 42 }
                 warehouseId: { type: string }
                 rackBinLocation: { type: string }
-                salesOrderId: { type: integer }
                 productionDate: { type: string, format: date }
                 plywoodGrade: { type: string, enum: [MR, BWR, BWP, Other] }
                 thickness: { type: number }
@@ -3739,9 +3738,6 @@ paths:
         - name: productionOrderId
           in: query
           schema: { type: string }
-        - name: salesOrderId
-          in: query
-          schema: { type: integer }
         - name: warehouseId
           in: query
           schema: { type: string }

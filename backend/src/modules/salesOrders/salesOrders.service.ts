@@ -7,10 +7,11 @@ import { CreateSalesOrderInput, ListSalesOrdersQuery, UpdateSalesOrderInput } fr
 
 // FG Module Part 3 — see README "FG Module Part 3" for the full design.
 // A real SalesOrder entity, not just the plain unenforced salesOrderId
-// FgBatch has carried since Part 1: one Sales Order can be fulfilled by
-// several FG batches over time, and partially at that, which only a real
-// row with its own quantity/status (and a real reservation join table —
-// see fgBatch/fgReservation.service.ts) can track.
+// FgBatch originally carried from Part 1 (removed entirely once genuinely
+// unused — see README "FG Module Part 5 — cleanup"): one Sales Order can be
+// fulfilled by several FG batches over time, and partially at that, which
+// only a real row with its own quantity/status (and a real reservation join
+// table — see fgBatch/fgReservation.service.ts) can track.
 
 type SalesOrderResult = Awaited<ReturnType<typeof prisma.salesOrder.findUniqueOrThrow>>;
 
@@ -103,9 +104,10 @@ export async function deleteSalesOrder(salesOrderNo: string): Promise<void> {
 //   otherwise -> Open
 // `dispatchedQty` here is the sum of every FgDispatchLineItem.quantity
 // across every FgDispatch actually made against this Sales Order (joined
-// via FgDispatch.salesOrderId, never through FgBatch's own superseded
-// field) — a dispatch made with no salesOrderId never touches this sum, by
-// design (see fgDispatch.service.ts). `Closed` is still declared on
+// via FgDispatch.salesOrderId — fg_batches has no salesOrderId column of
+// its own any more, see README "FG Module Part 5 — cleanup") — a dispatch
+// made with no salesOrderId never touches this sum, by design (see
+// fgDispatch.service.ts). `Closed` is still declared on
 // SalesOrderStatus but NOT set by this function and remains unreachable by
 // anything built through Part 4 — there is no "close this Sales Order"
 // action yet.
