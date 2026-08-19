@@ -255,6 +255,21 @@ async function processDispatchLineItem(
 // line items that happen to name the SAME fgBatchId (unusual, not
 // rejected) net correctly against each other instead of racing on stale
 // reads.
+//
+// `timeout: 15000` (Prisma's own default is 5000ms) — this is the most
+// database-round-trip-heavy transaction in the whole FG module: per line
+// item it's a batch read, an Active-reservation read, one update per
+// reservation row consumed, the batch write, the line item insert, and a
+// movement-log insert, plus one more read+maybe-write for
+// recomputeSalesOrderStatus when a Sales Order is attached — all
+// sequential, by design (see above). Confirmed live against this app's own
+// real dev database (not a synthetic worst case) that a single-line-item,
+// single-reservation dispatch already lands right at ~5.3s under ordinary
+// network latency to a remote Postgres, tripping Prisma's default limit
+// (P2028) even though every individual query is fast — the default simply
+// isn't sized for a transaction this shape does. 15s gives real headroom
+// without masking a genuinely stuck transaction (a hung query would still
+// hit it).
 export async function createDispatch(input: CreateDispatchInput, dispatchedBy: string): Promise<FgDispatchOutput> {
   const salesOrderId = input.salesOrderId ?? null;
 
@@ -285,7 +300,9 @@ export async function createDispatch(input: CreateDispatchInput, dispatchedBy: s
         }
 
         return tx.fgDispatch.findUniqueOrThrow({ where: { id: dispatch.id }, include: includeLineItems });
-      }),
+      },
+      { timeout: 15000 },
+    ),
   );
 
   return toOutput(created);
