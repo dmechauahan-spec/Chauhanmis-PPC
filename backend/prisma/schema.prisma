@@ -233,6 +233,11 @@ model RmInventory {
 
   bomComponents BomComponent[]
   transactions  RmTransaction[]
+  // Purchase Module Part 1 — reverse side of PurchaseItem.rmPartId, the
+  // deliberate link back to this ALREADY-EXISTING RM stock system for
+  // RawMaterial-category purchase items. See PurchaseItem's own comment and
+  // README "Purchase Module Part 1".
+  purchaseItems PurchaseItem[]
 
   @@map("rm_inventory")
 }
@@ -1041,4 +1046,155 @@ model PasswordResetToken {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("password_reset_tokens")
+}
+
+// ============================================================================
+// PURCHASE MODULE — PART 1: SUPPLIERS, PURCHASE ITEMS, INDENT/APPROVAL (see
+// README "Purchase Module Part 1"). First of 5 parts building the broader
+// Purchase Order lifecycle: Indent -> Approval -> RFQ/Quotation -> PO -> GRN
+// -> QC -> Inventory, integrated across BOM/PPC/IMS/Department Requirements/
+// Supplier/GRN/QC/Inventory/Accounts, covering every purchase category (Raw
+// Material through Stationery and Services), per the client's own spec.
+//
+// Deliberately separate from, and does not touch, Module 9's existing
+// PurchaseRequisition/PrLineItem/PrStatusHistory models above — that is a
+// narrow, already-working RM-only flow (consolidated shortage demand ->
+// auto-generated PR -> Fulfilled -> credits rm_inventory) and keeps working
+// exactly as it does now. Where the two conceptually overlap (both
+// eventually credit stock), this module reuses Module 1's `adjustStock` for
+// the RawMaterial category specifically rather than duplicating RM stock
+// bookkeeping — see PurchaseItem.rmPartId below.
+// ============================================================================
+
+enum PurchaseCategory {
+  RawMaterial
+  Consumables
+  PackingMaterial
+  MaintenanceSpares
+  Safety
+  StationeryOffice
+  ItElectronics
+  Services
+}
+
+model Supplier {
+  id            BigInt   @id @default(autoincrement())
+  supplierCode  String   @unique @map("supplier_code")
+  supplierName  String   @map("supplier_name")
+  gstNumber     String?  @map("gst_number")
+  contactPerson String?  @map("contact_person")
+  phone         String?
+  email         String?
+  address       String?
+  paymentTerms  String?  @map("payment_terms")
+  isActive      Boolean  @default(true) @map("is_active")
+
+  @@map("suppliers")
+}
+
+// Multi-category item master. `rmPartId` is the deliberate link back to the
+// ALREADY-EXISTING rm_inventory stock system for RawMaterial-category items
+// — required and validated (service layer) to reference a real
+// rm_inventory.partId whenever category = RawMaterial, so an RM purchase
+// item never creates a second, conflicting stock number for the same
+// physical material. Every other category is validated to leave rmPartId
+// null; those categories get their own stock ledger in a later part of this
+// module (deliberately not built yet) — see README "Purchase Module Part 1".
+model PurchaseItem {
+  id            BigInt           @id @default(autoincrement())
+  itemCode      String           @unique @map("item_code")
+  itemName      String           @map("item_name")
+  category      PurchaseCategory
+  specification String?
+  uom           String
+  rmPartId      String?          @map("rm_part_id")
+  minStock      Decimal?         @map("min_stock") @db.Decimal(12, 2)
+  maxStock      Decimal?         @map("max_stock") @db.Decimal(12, 2)
+  isActive      Boolean          @default(true) @map("is_active")
+
+  rmInventory     RmInventory?     @relation(fields: [rmPartId], references: [partId])
+  purchaseIndents PurchaseIndent[]
+
+  @@index([category])
+  @@map("purchase_items")
+}
+
+enum IndentStatus {
+  Draft
+  Submitted
+  Approved
+  Rejected
+  ConvertedToPO
+}
+
+enum IndentPriority {
+  Low
+  Medium
+  High
+  Urgent
+}
+
+// Where an indent's demand originated. Only `Manual` (a person filling out
+// the form) is wired to anything in Part 1 — the rest are declared now so
+// later parts (BOM shortage, IMS min-stock, PPC requirement, maintenance,
+// department request auto-generation) have a stable value to write into an
+// already-shipped column instead of a schema change. See README.
+enum IndentSourceType {
+  Manual
+  BomShortage
+  ImsMinStock
+  PpcRequirement
+  MaintenanceRequirement
+  DepartmentRequest
+}
+
+model PurchaseIndent {
+  id               BigInt           @id @default(autoincrement())
+  indentNo         String           @unique @map("indent_no")
+  indentDate       DateTime         @default(now()) @map("indent_date") @db.Date
+  department       String
+  requestedBy      String           @map("requested_by")
+  category         PurchaseCategory
+  purchaseItemId   BigInt           @map("purchase_item_id")
+  specification    String?
+  qty              Decimal          @db.Decimal(12, 2)
+  uom              String
+  requiredDate     DateTime?        @map("required_date") @db.Date
+  priority         IndentPriority   @default(Medium)
+  reason           String?
+  referenceOrderId String?          @map("reference_order_id")
+  // Added now for a later part's auto-generation to write into (e.g. a BOM
+  // shortage or IMS min-stock trigger) — unused by anything in Part 1 beyond
+  // defaulting to Manual/null on a person-created indent. See README.
+  sourceType        IndentSourceType @default(Manual) @map("source_type")
+  sourceReferenceId String?          @map("source_reference_id")
+  status           IndentStatus     @default(Draft)
+  createdAt        DateTime         @default(now()) @map("created_at")
+
+  purchaseItem    PurchaseItem            @relation(fields: [purchaseItemId], references: [id])
+  approvalHistory IndentApprovalHistory[]
+
+  @@index([status])
+  @@index([category])
+  @@index([department])
+  @@index([sourceType])
+  @@map("purchase_indents")
+}
+
+// Audit trail of every status-changing action taken on an indent
+// (Submitted/Approved/Rejected) — same shape/convention as Module 9's
+// PrStatusHistory. `action` is a plain string (not an enum) matching the
+// verb, e.g. `"Submitted"`, `"Approved"`, `"Rejected"`.
+model IndentApprovalHistory {
+  id       BigInt   @id @default(autoincrement())
+  indentId BigInt   @map("indent_id")
+  action   String
+  actionBy String   @map("action_by")
+  remarks  String?
+  actionAt DateTime @default(now()) @map("action_at")
+
+  indent PurchaseIndent @relation(fields: [indentId], references: [id], onDelete: Cascade)
+
+  @@index([indentId])
+  @@map("indent_approval_history")
 }
