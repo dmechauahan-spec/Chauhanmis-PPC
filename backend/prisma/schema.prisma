@@ -1089,6 +1089,10 @@ model Supplier {
   paymentTerms  String?  @map("payment_terms")
   isActive      Boolean  @default(true) @map("is_active")
 
+  // Purchase Module Part 2 — see README "Purchase Module Part 2".
+  rfqInvitations RfqSupplier[]
+  quotations     SupplierQuotation[]
+
   @@map("suppliers")
 }
 
@@ -1173,6 +1177,11 @@ model PurchaseIndent {
 
   purchaseItem    PurchaseItem            @relation(fields: [purchaseItemId], references: [id])
   approvalHistory IndentApprovalHistory[]
+  // Purchase Module Part 2 — see README "Purchase Module Part 2". An
+  // Approved indent may spawn more than one RFQ over time (e.g. a re-RFQ
+  // after every quotation on the first one was rejected), so this is a
+  // plain one-to-many, not a 1:1.
+  rfqs Rfq[]
 
   @@index([status])
   @@index([category])
@@ -1197,4 +1206,79 @@ model IndentApprovalHistory {
 
   @@index([indentId])
   @@map("indent_approval_history")
+}
+
+// ============================================================================
+// PURCHASE MODULE — PART 2: RFQ + QUOTATION + COMPARISON (see README
+// "Purchase Module Part 2"). Once an Indent is Approved, it's sent to one or
+// more suppliers for quotation; each supplier's commercial terms are
+// captured and compared side by side (by computed landed cost, not raw
+// rate); selecting one records the decision for Part 3's PO creation to
+// read — this module never creates a PO itself.
+// ============================================================================
+
+// One RFQ event, always created from an Approved PurchaseIndent, naming the
+// suppliers it was sent to. An indent may spawn more than one RFQ over its
+// lifetime (e.g. a re-RFQ after every quotation on the first round was
+// rejected) — see PurchaseIndent.rfqs above.
+model Rfq {
+  id        BigInt   @id @default(autoincrement())
+  rfqNo     String   @unique @map("rfq_no")
+  indentId  BigInt   @map("indent_id")
+  createdBy String   @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  indent     PurchaseIndent      @relation(fields: [indentId], references: [id])
+  suppliers  RfqSupplier[]
+  quotations SupplierQuotation[]
+
+  @@index([indentId])
+  @@map("rfqs")
+}
+
+// Join table: which suppliers this RFQ was actually sent to — the
+// invitation list a SupplierQuotation is validated against (see
+// rfq.service.ts's own comment on that check). Never edited after RFQ
+// creation in Part 2 — there is no "add a supplier to an existing RFQ"
+// endpoint.
+model RfqSupplier {
+  id         BigInt @id @default(autoincrement())
+  rfqId      BigInt @map("rfq_id")
+  supplierId BigInt @map("supplier_id")
+
+  rfq      Rfq      @relation(fields: [rfqId], references: [id], onDelete: Cascade)
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+
+  @@unique([rfqId, supplierId])
+  @@map("rfq_suppliers")
+}
+
+// One supplier's commercial terms against one RFQ. `@@unique([rfqId,
+// supplierId])` is what makes "one quotation per supplier per RFQ" a DB-
+// level guarantee, not just an application check — a resubmission is a
+// PATCH against the existing row (rejected once isSelected), never a second
+// insert. `isSelected` is the Part 2 output Part 3 reads to create a PO —
+// at most one true per rfqId, enforced in rfq.service.ts's selectSupplier
+// (un-selecting any previous pick first), not at the DB level.
+model SupplierQuotation {
+  id           BigInt    @id @default(autoincrement())
+  rfqId        BigInt    @map("rfq_id")
+  supplierId   BigInt    @map("supplier_id")
+  rate         Decimal   @db.Decimal(12, 2)
+  gstPct       Decimal?  @map("gst_pct") @db.Decimal(5, 2)
+  freight      Decimal?  @db.Decimal(12, 2)
+  deliveryDays Int?      @map("delivery_days")
+  paymentTerms String?   @map("payment_terms")
+  validity     DateTime? @db.Date
+  otherCharges Decimal?  @map("other_charges") @db.Decimal(12, 2)
+  isSelected   Boolean   @default(false) @map("is_selected")
+  submittedBy  String    @map("submitted_by")
+  submittedAt  DateTime  @default(now()) @map("submitted_at")
+
+  rfq      Rfq      @relation(fields: [rfqId], references: [id])
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+
+  @@unique([rfqId, supplierId])
+  @@index([rfqId])
+  @@map("supplier_quotations")
 }
