@@ -2649,6 +2649,86 @@ above follows.
 `IND-20260820-01`) — see `src/utils/sequentialIdGenerator.ts`. No new ID scheme was invented for
 this module.
 
+**Body-carried ids vs. path/query ids — a Part 1 bug fixed in Part 2, and a convention now applied
+consistently.** `installBigIntJsonSupport` (Module 1) serializes every `BigInt` id in a JSON
+response as a plain **number**, not a string. Path/query segments are always raw strings on the
+wire regardless (`z.string().regex(/^\d+$/).transform(BigInt)` is correct there), but a **body**
+field that carries an id — like `PurchaseIndent.purchaseItemId` or Part 2's own
+`indentId`/`supplierIds`/`supplierId` — can arrive as either a JSON number (a caller passing an id
+straight from a prior response, the common case) or a numeric string. Part 1's
+`createIndentSchema.purchaseItemId` originally used the string-only params schema for this body
+field, which rejected a perfectly valid numeric id the moment a caller sent it as a real JSON
+number instead of a hand-typed string — caught by Part 2's own integration tests (`POST /api/rfqs`
+sending an `indentId` taken directly from a `POST /api/purchase-indents` response) and fixed in
+both places to `z.coerce.bigint()`, the same convention FG Module Part 4's `fgDispatch.schema.ts`
+already used for `fgBatchId`/`salesOrderId`. `rfq.schema.ts` keeps both conventions side by side,
+named `pathId` and `bodyId`, specifically so this distinction stays visible rather than being
+re-discovered per module.
+
+### Purchase Module Part 2 — RFQ + Quotation + Comparison
+
+Once an Indent is `Approved`, it's sent to one or more suppliers for quotation; each supplier's
+commercial terms are captured and compared side by side by **computed landed cost**, not raw rate;
+selecting one records the decision for Part 3's PO creation to read. This module never creates a PO
+itself — see the `select-supplier` section below.
+
+**`Rfq` / `RfqSupplier` / `SupplierQuotation` — one RFQ event, its invitation list, one quotation
+row per invited supplier.** `POST /api/rfqs` (`{ indentId, supplierIds }`) validates the indent is
+`Approved` — a Draft/Submitted/Rejected/already-converted indent has no business generating
+supplier-facing paperwork yet — and every `supplierId` exists, then creates the `Rfq` row plus one
+`RfqSupplier` row per supplier in a single transaction. `rfqNo` uses the same shared
+date-sequence-with-retry-on-collision scheme as `indentNo`/`prNumber`/`dispatchNo` (prefix `RFQ`,
+e.g. `RFQ-20260820-01`). An `Approved` indent may spawn **more than one** RFQ over its lifetime
+(e.g. a re-RFQ after every quotation on a prior round was rejected) — `createRfq` deliberately does
+not check for an existing `Rfq` against the same `indentId`.
+
+**Quotation capture: POST creates, PATCH updates — never a duplicate insert.**
+`POST /:rfqId/quotations` validates the named `supplierId` is actually one of this RFQ's invited
+suppliers (an `RfqSupplier` row must exist) — a quotation from an uninvited supplier is rejected.
+`@@unique([rfqId, supplierId])` on `SupplierQuotation` makes "one quotation per supplier per RFQ" a
+DB-level guarantee; a second `POST` for the same pair is rejected with a clear message pointing at
+`PATCH /:rfqId/quotations/:supplierId` instead of surfacing the generic P2002 mapping. `PATCH`
+updates the existing row — but is itself rejected once that quotation's `isSelected` is `true`: a
+locked-in decision shouldn't silently change out from under whoever/whatever (Part 3) reads it
+next. `submittedBy` is server-derived (`req.user.name`), never client-supplied, same convention as
+every other actor-attribution field in this codebase.
+
+**Landed cost — the number that actually matters for comparison, not the raw rate alone.**
+`landedCostCalculator.ts`'s `calculateLandedCost` is a pure, isolated, unit-tested function (same
+separation-of-concerns pattern as `oeeCalculator`/`bomExplosionEngine`/`ctbEvaluator`/
+`materialAggregator`/`urgencyScorer`):
+
+```
+landedCost = rate + (rate * gstPct/100) + freight + otherCharges
+```
+
+`gstPct`/`freight`/`otherCharges` missing (`null`/`undefined` — a supplier simply didn't quote that
+line) are treated as `0`, never as disqualifying the quotation from comparison. **Worked example**:
+Supplier A quotes `rate: 1000` with nothing else — landed cost `1000`. Supplier B quotes
+`rate: 950, gstPct: 18, freight: 60` — landed cost `950 + (950*0.18=171) + 60 = 1181`. Supplier B's
+raw rate is *lower*, but its landed cost is *higher* — exactly the case comparison-by-raw-rate would
+get backwards. `deliveryDays`/`paymentTerms` are deliberately **not** folded into the formula (real
+decision factors, but not expressible as a single currency figure) — `GET /:rfqId/compare` surfaces
+them alongside `landedCost` instead, with every quotation on the RFQ sorted by `landedCost`
+ascending so the best option is immediately visible.
+
+**One selected quotation per RFQ, and only that.** `POST /:rfqId/select-supplier` (`{ supplierId
+}`) sets that supplier's quotation `isSelected = true`; if a different quotation on the same RFQ was
+previously selected, it's un-selected first, inside the same transaction — so at most one
+`SupplierQuotation` row is ever `isSelected: true` per `rfqId`. This is enforced in
+`rfq.service.ts`'s `selectSupplier`, not at the DB level (no partial unique index) — a plain,
+application-level "un-select the old one, select the new one" transaction was sufficient at this
+scale and keeps the schema simple. **The endpoint's responsibility stops there — it does NOT create
+a PO.** Part 3 will read `SupplierQuotation.isSelected = true` for a given `rfqId` explicitly when a
+PO is created from that RFQ; keeping selection and PO-creation as two separate, explicit steps means
+a selected quotation can be revisited (select a different supplier instead) for as long as no PO has
+actually been created from it yet.
+
+**Permissions.** One new entry, `rfq` (`read: STORE_AND_PRODUCTION, write: STORE_ONLY`) — creating/
+managing RFQs and quotations (including capturing/updating a quotation and selecting a supplier) is
+Admin/StoreManager, the same procurement-decision territory as `purchaseIndents.approve`; all roles
+read.
+
 ## Assumptions
 
 - Client-supplied primary keys (`modelId`, `lineId`, `teamId`, `orderId`, `partId`, and (FG Module

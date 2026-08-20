@@ -16,10 +16,12 @@ export const indentIdParamsSchema = z.object({
 export const createIndentSchema = z.object({
   department: z.string().min(1, 'department is required'),
   category: purchaseCategoryEnum,
-  purchaseItemId: z
-    .string()
-    .regex(/^\d+$/, 'purchaseItemId must be a positive integer')
-    .transform((val) => BigInt(val)),
+  // z.coerce.bigint(), not the string-regex-transform params use, since this
+  // is a BODY field: ids round-trip through JSON as plain numbers (see
+  // installBigIntJsonSupport), so a caller passing an id straight from a
+  // prior response — not just a hand-typed string — must also validate.
+  // Same convention as fgDispatch.schema.ts's fgBatchId/salesOrderId.
+  purchaseItemId: z.coerce.bigint({ message: 'purchaseItemId must be a valid integer id' }),
   specification: z.string().optional(),
   qty: z.number().positive('qty must be greater than 0'),
   uom: z.string().min(1, 'uom is required'),

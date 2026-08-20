@@ -101,4 +101,10 @@ export const PERMISSIONS = {
   // procurement-decision split PERMISSIONS already uses for
   // purchaseRequisitions.
   purchaseIndents: { read: STORE_AND_PRODUCTION, write: STORE_AND_PRODUCTION, approve: STORE_ONLY },
+  // Purchase Module Part 2 — creating/managing RFQs and quotations
+  // (including capturing/updating a quotation and selecting a supplier) is
+  // Admin/StoreManager, same procurement-decision territory as
+  // purchaseIndents.approve; all roles read. See README "Purchase Module
+  // Part 2".
+  rfq: { read: STORE_AND_PRODUCTION, write: STORE_ONLY },
 } as const;

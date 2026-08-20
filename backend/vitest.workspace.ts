@@ -36,6 +36,7 @@ const INTEGRATION_TEST_FILES = [
   'src/modules/suppliers/suppliers.test.ts',
   'src/modules/purchaseItems/purchaseItems.test.ts',
   'src/modules/purchaseIndents/purchaseIndents.test.ts',
+  'src/modules/rfq/rfq.test.ts',
   'src/modules/qc/qc.test.ts',
   'src/modules/qc/testingPlans.test.ts',
   'src/modules/qcInspection/qcInspection.test.ts',

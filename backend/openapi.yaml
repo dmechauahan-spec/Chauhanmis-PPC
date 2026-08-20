@@ -65,6 +65,7 @@ tags:
   - name: Suppliers
   - name: Purchase Items
   - name: Purchase Indents
+  - name: RFQs
 
 components:
   securitySchemes:
@@ -1337,6 +1338,79 @@ components:
         actionBy: { type: string, readOnly: true }
         remarks: { type: string, nullable: true, description: Required when action = Rejected. }
         actionAt: { type: string, format: date-time, readOnly: true }
+
+    Rfq:
+      type: object
+      description: >
+        Purchase Module Part 2. Created ONLY from an Approved PurchaseIndent — see README
+        "Purchase Module Part 2". An indent may spawn more than one Rfq over its lifetime
+        (e.g. a re-RFQ after every quotation on a prior round was rejected).
+      properties:
+        id: { type: integer, readOnly: true }
+        rfqNo: { type: string, readOnly: true, example: RFQ-20260820-01, description: Generated via the shared sequential-id scheme. }
+        indentId: { type: integer }
+        createdBy: { type: string, readOnly: true, description: 'The authenticated caller''s name — never client-supplied.' }
+        createdAt: { type: string, format: date-time, readOnly: true }
+        suppliers:
+          type: array
+          readOnly: true
+          description: The invitation list — one row per supplier this RFQ was sent to.
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              supplierId: { type: integer }
+              supplier: { $ref: '#/components/schemas/Supplier' }
+        quotations:
+          type: array
+          readOnly: true
+          items: { $ref: '#/components/schemas/SupplierQuotation' }
+
+    SupplierQuotation:
+      type: object
+      description: >
+        Purchase Module Part 2. One supplier's commercial terms against one Rfq —
+        @@unique([rfqId, supplierId]) makes "one quotation per supplier per RFQ" DB-enforced.
+        POST creates, PATCH updates (rejected once isSelected) — never a duplicate insert. See
+        README "Purchase Module Part 2".
+      properties:
+        id: { type: integer, readOnly: true }
+        rfqId: { type: integer, readOnly: true }
+        supplierId: { type: integer }
+        rate: { type: number }
+        gstPct: { type: number, nullable: true }
+        freight: { type: number, nullable: true }
+        deliveryDays: { type: integer, nullable: true }
+        paymentTerms: { type: string, nullable: true }
+        validity: { type: string, format: date, nullable: true }
+        otherCharges: { type: number, nullable: true }
+        isSelected:
+          type: boolean
+          default: false
+          readOnly: true
+          description: At most one true per rfqId — set only via POST /rfqs/{rfqId}/select-supplier.
+        submittedBy: { type: string, readOnly: true, description: 'The authenticated caller''s name — never client-supplied.' }
+        submittedAt: { type: string, format: date-time, readOnly: true }
+
+    QuotationComparisonRow:
+      type: object
+      description: >
+        Purchase Module Part 2. One row of GET /rfqs/{rfqId}/compare — landedCost = rate + (rate *
+        gstPct/100) + freight + otherCharges, the number that actually matters for comparison, not
+        the raw rate alone. See README "Purchase Module Part 2" for a worked example.
+      properties:
+        supplierId: { type: integer }
+        supplierCode: { type: string }
+        supplierName: { type: string }
+        rate: { type: number }
+        gstPct: { type: number, nullable: true }
+        freight: { type: number, nullable: true }
+        otherCharges: { type: number, nullable: true }
+        landedCost: { type: number, description: 'rate + (rate * gstPct/100) + freight + otherCharges, rounded to 2 decimals.' }
+        deliveryDays: { type: integer, nullable: true }
+        paymentTerms: { type: string, nullable: true }
+        validity: { type: string, format: date, nullable: true }
+        isSelected: { type: boolean }
 
     FgBatch:
       type: object
@@ -4563,3 +4637,172 @@ paths:
         '400': { description: 'Indent is not currently Submitted, or remarks missing' }
         '403': { description: Caller is neither Admin nor StoreManager }
         '404': { description: Not found }
+
+  /rfqs:
+    get:
+      tags: [RFQs]
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: indentId
+          in: query
+          schema: { type: integer }
+      responses:
+        '200': { description: Paginated list of RFQs }
+    post:
+      tags: [RFQs]
+      summary: Creates an RFQ from an Approved indent, inviting the given suppliers
+      description: >
+        Admin/StoreManager only. Rejects an indent that is not currently Approved. rfqNo is
+        generated via the shared sequential-id scheme. An Approved indent may spawn more than one
+        RFQ over its lifetime — see README "Purchase Module Part 2".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [indentId, supplierIds]
+              properties:
+                indentId: { type: integer }
+                supplierIds: { type: array, items: { type: integer }, minItems: 1 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Rfq' }
+        '400': { description: 'Validation error, or the indent is not currently Approved' }
+        '403': { description: Caller is neither Admin nor StoreManager }
+        '404': { description: 'Unknown indentId, or one or more unknown supplierIds' }
+
+  /rfqs/{rfqId}:
+    parameters:
+      - name: rfqId
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [RFQs]
+      responses:
+        '200':
+          description: Rfq
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Rfq' }
+        '404': { description: Not found }
+
+  /rfqs/{rfqId}/compare:
+    parameters:
+      - name: rfqId
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [RFQs]
+      summary: The comparison view — every quotation on this RFQ, sorted by landed cost ascending
+      description: >
+        landedCost = rate + (rate * gstPct/100) + freight + otherCharges — the number that
+        actually matters for comparison, not the raw rate alone. deliveryDays/paymentTerms are
+        surfaced alongside since landed cost isn't the only decision factor. See README "Purchase
+        Module Part 2" for a worked example.
+      responses:
+        '200':
+          description: Quotations sorted by landedCost ascending
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/QuotationComparisonRow' }
+        '404': { description: Unknown rfqId }
+
+  /rfqs/{rfqId}/quotations:
+    parameters:
+      - name: rfqId
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [RFQs]
+      summary: Captures one invited supplier's quotation
+      description: >
+        Admin/StoreManager only. Rejects a quotation from a supplier not on this RFQ's invitation
+        list (no matching RfqSupplier row). A second POST for a supplier that already has a
+        quotation on this RFQ is rejected (409), pointing at PATCH
+        /rfqs/{rfqId}/quotations/{supplierId} instead — see README "Purchase Module Part 2".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupplierQuotation' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupplierQuotation' }
+        '400': { description: 'Validation error, or supplier not invited to this RFQ' }
+        '403': { description: Caller is neither Admin nor StoreManager }
+        '404': { description: Unknown rfqId }
+        '409': { description: Supplier already has a quotation on this RFQ — use PATCH instead }
+
+  /rfqs/{rfqId}/quotations/{supplierId}:
+    parameters:
+      - name: rfqId
+        in: path
+        required: true
+        schema: { type: integer }
+      - name: supplierId
+        in: path
+        required: true
+        schema: { type: integer }
+    patch:
+      tags: [RFQs]
+      summary: Updates an existing quotation — the resubmission path, never a duplicate insert
+      description: Admin/StoreManager only. Rejected once this quotation has already been selected (isSelected = true).
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupplierQuotation' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupplierQuotation' }
+        '400': { description: No fields provided }
+        '403': { description: Caller is neither Admin nor StoreManager }
+        '404': { description: No quotation exists for this rfqId/supplierId pair }
+        '409': { description: This quotation has already been selected }
+
+  /rfqs/{rfqId}/select-supplier:
+    parameters:
+      - name: rfqId
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [RFQs]
+      summary: Locks in the chosen quotation — does NOT create a PO
+      description: >
+        Admin/StoreManager only. Sets the named supplier's quotation isSelected = true;
+        un-selects any previously-selected quotation on this RFQ first (at most one selected per
+        RFQ). Part 3 reads the selected quotation explicitly when a PO is created from this RFQ —
+        see README "Purchase Module Part 2".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [supplierId]
+              properties:
+                supplierId: { type: integer }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupplierQuotation' }
+        '403': { description: Caller is neither Admin nor StoreManager }
+        '404': { description: 'Unknown rfqId, or no quotation exists for this supplier on this RFQ' }
