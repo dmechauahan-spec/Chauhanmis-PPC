@@ -66,6 +66,7 @@ tags:
   - name: Purchase Items
   - name: Purchase Indents
   - name: RFQs
+  - name: Purchase Orders
 
 components:
   securitySchemes:
@@ -1411,6 +1412,108 @@ components:
         paymentTerms: { type: string, nullable: true }
         validity: { type: string, format: date, nullable: true }
         isSelected: { type: boolean }
+
+    PurchaseOrder:
+      type: object
+      description: >
+        Purchase Module Part 3. Created either from an RFQ's selected SupplierQuotation
+        (indentId + rfqId both set) or directly against a known supplier (both null) — see README
+        "Purchase Module Part 3". totalValue is always the server-computed sum of every line's
+        lineTotal. isOverdue is computed at read time, never stored (see README) — there is no
+        Overdue value on the status enum.
+      properties:
+        id: { type: integer, readOnly: true }
+        poNumber: { type: string, readOnly: true, example: PO-20260820-01, description: Generated via the shared sequential-id scheme. }
+        poDate: { type: string, format: date, readOnly: true }
+        supplierId: { type: integer }
+        category:
+          type: string
+          enum: [RawMaterial, Consumables, PackingMaterial, MaintenanceSpares, Safety, StationeryOffice, ItElectronics, Services]
+        indentId: { type: integer, nullable: true, readOnly: true, description: Set only on a PO created from an RFQ. }
+        rfqId: { type: integer, nullable: true, readOnly: true, description: Set only on a PO created from an RFQ. }
+        requiredDeliveryDate: { type: string, format: date, nullable: true }
+        deliveryWarehouseId: { type: string, nullable: true, description: 'Soft reference, validated against Warehouse.warehouseId if given.' }
+        paymentTerms: { type: string, nullable: true }
+        freightTerms: { type: string, nullable: true }
+        buyerName: { type: string, description: Defaults to the caller's own name when omitted. }
+        status:
+          type: string
+          enum: [Draft, PendingApproval, Approved, SentToSupplier, SupplierConfirmed, PartiallyReceived, FullyReceived, OnHold, Cancelled, Rejected]
+          readOnly: true
+        remarks: { type: string, nullable: true }
+        totalValue: { type: number, readOnly: true, description: Server-computed sum of every line's lineTotal — never client-supplied. }
+        supplierConfirmedDate: { type: string, format: date, nullable: true }
+        cancellationReason: { type: string, nullable: true, description: Required in the request body when transitioning to Cancelled. }
+        createdBy: { type: string, readOnly: true, description: 'The authenticated caller''s name — never client-supplied.' }
+        createdAt: { type: string, format: date-time, readOnly: true }
+        isOverdue: { type: boolean, readOnly: true, description: Computed at read time — see README "Purchase Module Part 3". Never stored. }
+        lineItems:
+          type: array
+          readOnly: true
+          items: { $ref: '#/components/schemas/PoLineItem' }
+        amendmentHistory:
+          type: array
+          readOnly: true
+          description: Detail endpoint only — every amendment AND status transition, oldest first.
+          items: { $ref: '#/components/schemas/PoAmendmentHistory' }
+        warnings:
+          type: array
+          readOnly: true
+          description: POST response only. Duplicate-detection warnings — see README. Never blocks creation.
+          items: { $ref: '#/components/schemas/DuplicatePoWarning' }
+
+    PoLineItem:
+      type: object
+      description: >
+        Purchase Module Part 3. lineTotal = (orderedQty * rate * (1 - discountPct/100)) *
+        (1 + taxPct/100) + freightOther — server-computed, never client-supplied. receivedQty/
+        acceptedQty/rejectedQty are exclusively Part 4's (GRN + QC) to write.
+      properties:
+        id: { type: integer, readOnly: true }
+        poId: { type: integer, readOnly: true }
+        purchaseItemId: { type: integer }
+        specification: { type: string, nullable: true }
+        orderedQty: { type: number }
+        uom: { type: string }
+        rate: { type: number }
+        discountPct: { type: number, nullable: true }
+        taxPct: { type: number, nullable: true }
+        freightOther: { type: number, default: 0 }
+        expectedDeliveryDate: { type: string, format: date, nullable: true }
+        lineTotal: { type: number, readOnly: true }
+        receivedQty: { type: number, readOnly: true, default: 0, description: Part 4 (GRN) only. }
+        acceptedQty: { type: number, readOnly: true, default: 0, description: Part 4 (GRN + QC) only. }
+        rejectedQty: { type: number, readOnly: true, default: 0, description: Part 4 (GRN + QC) only. }
+
+    PoAmendmentHistory:
+      type: object
+      description: >
+        Purchase Module Part 3. Logs BOTH amendments (PATCH /purchase-orders/{poNumber}) AND status
+        transitions (PATCH /purchase-orders/{poNumber}/status, fieldChanged = 'status') — there is
+        no separate PoStatusHistory table. See README "Purchase Module Part 3" for how this also
+        makes OnHold's exact-resume-target design possible with no extra schema field.
+      properties:
+        id: { type: integer, readOnly: true }
+        poId: { type: integer, readOnly: true }
+        fieldChanged: { type: string, example: paymentTerms, description: "Either a PO-level field name, 'status', or 'lineItem[<id>].<field>'." }
+        oldValue: { type: string, nullable: true }
+        newValue: { type: string, nullable: true }
+        changedBy: { type: string, readOnly: true }
+        changedAt: { type: string, format: date-time, readOnly: true }
+        reason: { type: string, nullable: true }
+
+    DuplicatePoWarning:
+      type: object
+      description: >
+        Purchase Module Part 3. Detection, not prevention — never blocks creation. See README
+        "Purchase Module Part 3" for DUPLICATE_PO_CHECK_WINDOW_DAYS / _TOLERANCE_PCT.
+      properties:
+        purchaseItemId: { type: string }
+        newQty: { type: number }
+        existingPoNumber: { type: string }
+        existingQty: { type: number }
+        existingPoStatus: { type: string }
+        message: { type: string }
 
     FgBatch:
       type: object
@@ -4806,3 +4909,204 @@ paths:
               schema: { $ref: '#/components/schemas/SupplierQuotation' }
         '403': { description: Caller is neither Admin nor StoreManager }
         '404': { description: 'Unknown rfqId, or no quotation exists for this supplier on this RFQ' }
+
+  /purchase-orders:
+    get:
+      tags: [Purchase Orders]
+      summary: List purchase orders
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [Draft, PendingApproval, Approved, SentToSupplier, SupplierConfirmed, PartiallyReceived, FullyReceived, OnHold, Cancelled, Rejected]
+        - name: supplierId
+          in: query
+          schema: { type: integer }
+        - name: category
+          in: query
+          schema:
+            type: string
+            enum: [RawMaterial, Consumables, PackingMaterial, MaintenanceSpares, Safety, StationeryOffice, ItElectronics, Services]
+        - name: dateFrom
+          in: query
+          schema: { type: string, format: date }
+          description: Filters against poDate.
+        - name: dateTo
+          in: query
+          schema: { type: string, format: date }
+          description: Filters against poDate.
+        - name: overdue
+          in: query
+          schema: { type: boolean }
+          description: Computed filter — see README "Purchase Module Part 3". Never a stored column.
+      responses:
+        '200': { description: Paginated list of purchase orders (each item carries the computed isOverdue) }
+    post:
+      tags: [Purchase Orders]
+      summary: Creates a Purchase Order — either from an RFQ's selected quotation, or directly against a known supplier
+      description: >
+        Admin/StoreManager only. Two mutually exclusive request shapes — see README "Purchase
+        Module Part 3": { rfqId, ...optional PO-level fields } pulls supplier/category/the single
+        line item from the RFQ's selected SupplierQuotation and source indent, and flips that
+        indent to ConvertedToPO; { supplierId, category, lineItems: [...], ...optional PO-level
+        fields } creates directly with no RFQ at all. lineTotal/totalValue are always
+        server-computed. Duplicate detection WARNS (via the response's warnings array) but never
+        blocks creation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  required: [rfqId]
+                  properties:
+                    rfqId: { type: integer }
+                    requiredDeliveryDate: { type: string, format: date }
+                    deliveryWarehouseId: { type: string }
+                    paymentTerms: { type: string }
+                    freightTerms: { type: string }
+                    buyerName: { type: string }
+                    remarks: { type: string }
+                - type: object
+                  required: [supplierId, category, lineItems]
+                  properties:
+                    supplierId: { type: integer }
+                    category:
+                      type: string
+                      enum: [RawMaterial, Consumables, PackingMaterial, MaintenanceSpares, Safety, StationeryOffice, ItElectronics, Services]
+                    lineItems:
+                      type: array
+                      minItems: 1
+                      items:
+                        type: object
+                        required: [purchaseItemId, orderedQty, uom, rate]
+                        properties:
+                          purchaseItemId: { type: integer }
+                          specification: { type: string }
+                          orderedQty: { type: number }
+                          uom: { type: string }
+                          rate: { type: number }
+                          discountPct: { type: number }
+                          taxPct: { type: number }
+                          freightOther: { type: number }
+                          expectedDeliveryDate: { type: string, format: date }
+                    requiredDeliveryDate: { type: string, format: date }
+                    deliveryWarehouseId: { type: string }
+                    paymentTerms: { type: string }
+                    freightTerms: { type: string }
+                    buyerName: { type: string }
+                    remarks: { type: string }
+      responses:
+        '201':
+          description: Created — data carries the PO plus a warnings array (possibly empty)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PurchaseOrder' }
+        '400': { description: 'Validation error, category/purchaseItem mismatch, an RFQ with no selected quotation, or invalid deliveryWarehouseId' }
+        '403': { description: Caller is neither Admin nor StoreManager }
+        '404': { description: 'Unknown rfqId/supplierId/purchaseItemId' }
+        '409': { description: 'The RFQs source indent has already been converted to a different PO' }
+
+  /purchase-orders/{poNumber}:
+    parameters:
+      - name: poNumber
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Purchase Orders]
+      responses:
+        '200':
+          description: Full PurchaseOrder with lineItems and amendmentHistory
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PurchaseOrder' }
+        '404': { description: Not found }
+    patch:
+      tags: [Purchase Orders]
+      summary: Amends quantity/rate/date/terms on a PO that hasn't reached FullyReceived/Cancelled/Rejected
+      description: >
+        Admin/StoreManager only. Every individually changed field (PO-level and per line item, the
+        latter addressed by its own id) writes its own PoAmendmentHistory row; lineTotal/
+        totalValue are recomputed whenever orderedQty/rate/discountPct/taxPct/freightOther changes
+        on a line. See README "Purchase Module Part 3".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                requiredDeliveryDate: { type: string, format: date, nullable: true }
+                deliveryWarehouseId: { type: string, nullable: true }
+                paymentTerms: { type: string, nullable: true }
+                freightTerms: { type: string, nullable: true }
+                buyerName: { type: string }
+                remarks: { type: string, nullable: true }
+                reason: { type: string, description: Shared reason recorded on every history row this request produces. }
+                lineItems:
+                  type: array
+                  items:
+                    type: object
+                    required: [id]
+                    properties:
+                      id: { type: integer }
+                      orderedQty: { type: number }
+                      rate: { type: number }
+                      discountPct: { type: number, nullable: true }
+                      taxPct: { type: number, nullable: true }
+                      freightOther: { type: number }
+                      expectedDeliveryDate: { type: string, format: date, nullable: true }
+                      specification: { type: string, nullable: true }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PurchaseOrder' }
+        '400': { description: 'No fields provided, or PO status is FullyReceived/Cancelled/Rejected' }
+        '403': { description: Caller is neither Admin nor StoreManager }
+        '404': { description: 'Unknown poNumber, or a line item id not belonging to this PO' }
+
+  /purchase-orders/{poNumber}/status:
+    parameters:
+      - name: poNumber
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [Purchase Orders]
+      summary: Status transition — Draft to PendingApproval to Approved to SentToSupplier to SupplierConfirmed to ..., with OnHold/Cancelled/Rejected branches
+      description: >
+        Admin/StoreManager only. PartiallyReceived/FullyReceived are NOT settable directly here —
+        Part 4's GRN acceptance logic drives both (400 naming the GRN flow on a direct attempt,
+        except when it's the legitimate OnHold resume target). cancellationReason is required when
+        status = Cancelled. supplierConfirmedDate is optional on a transition into
+        SupplierConfirmed (defaults to today). OnHold resumes to EXACTLY the status it was held
+        from — see README "Purchase Module Part 3".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [Draft, PendingApproval, Approved, SentToSupplier, SupplierConfirmed, PartiallyReceived, FullyReceived, OnHold, Cancelled, Rejected]
+                cancellationReason: { type: string, description: Required when status = Cancelled. }
+                supplierConfirmedDate: { type: string, format: date }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PurchaseOrder' }
+        '400': { description: 'Invalid transition, missing cancellationReason, or a direct PartiallyReceived/FullyReceived attempt' }
+        '403': { description: Caller is neither Admin nor StoreManager }
+        '404': { description: Unknown poNumber }

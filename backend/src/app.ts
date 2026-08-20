@@ -40,6 +40,7 @@ import suppliersRouter from './modules/suppliers/suppliers.routes';
 import purchaseItemsRouter from './modules/purchaseItems/purchaseItems.routes';
 import purchaseIndentsRouter from './modules/purchaseIndents/purchaseIndents.routes';
 import rfqRouter from './modules/rfq/rfq.routes';
+import purchaseOrdersRouter from './modules/purchaseOrders/purchaseOrders.routes';
 
 installBigIntJsonSupport();
 
@@ -106,6 +107,8 @@ export function createApp(): Express {
   app.use('/api/purchase-indents', purchaseIndentsRouter);
   // Purchase Module Part 2 — see README "Purchase Module Part 2".
   app.use('/api/rfqs', rfqRouter);
+  // Purchase Module Part 3 — see README "Purchase Module Part 3".
+  app.use('/api/purchase-orders', purchaseOrdersRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

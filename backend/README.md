@@ -2729,6 +2729,168 @@ managing RFQs and quotations (including capturing/updating a quotation and selec
 Admin/StoreManager, the same procurement-decision territory as `purchaseIndents.approve`; all roles
 read.
 
+### Purchase Module Part 3 — Purchase Order
+
+An `Approved` indent's selected RFQ quotation (Part 2) becomes a Purchase Order here — or, for a
+repeat/standing order to a known supplier, a PO is created directly with no RFQ at all. This part
+builds PO creation (both paths), the full status-transition state machine, and amendments. Part 4
+(GRN + QC + Inventory), the most complex part of this module, is next — see "PartiallyReceived/
+FullyReceived are GRN-driven" below for the extension point it plugs into.
+
+**Two creation paths, one endpoint — `POST /api/purchase-orders`.** Matched by shape at runtime
+(`'rfqId' in input`), not a discriminated union (neither branch naturally carries a literal
+discriminator field), in `purchaseOrders.service.ts`'s `createPurchaseOrder`:
+
+- **From RFQ** (`{ rfqId, ...optional PO-level overrides }`): reads the RFQ's selected
+  `SupplierQuotation` (`isSelected: true` — 404/400 if the RFQ doesn't exist or has none selected
+  yet, pointing at `POST /:rfqId/select-supplier`) and its source indent. Supplier, category, and
+  the **single** line item (`purchaseItemId`/`qty`/`uom`/`specification` from the indent,
+  `rate`/`taxPct` from the quotation's `rate`/`gstPct`, `freightOther` as the SUM of the
+  quotation's separate `freight` + `otherCharges` fields, `expectedDeliveryDate` computed from the
+  quotation's `deliveryDays` off the PO date) are all pulled server-side — a caller supplies only
+  `rfqId` plus whichever common PO-level fields (`requiredDeliveryDate`, `deliveryWarehouseId`,
+  `paymentTerms`, `freightTerms`, `buyerName`, `remarks`) it wants to set or override.
+  `discountPct` has no quotation-side equivalent, so an RFQ-sourced line always starts with none —
+  an amendment can add one later. An RFQ-sourced PO only ever has **one** line item: a
+  `SupplierQuotation` is captured per-RFQ, and an RFQ always traces back to exactly one indent
+  naming exactly one `purchaseItemId`/`qty`.
+- **Direct** (`{ supplierId, category, lineItems: [...], ...optional PO-level fields }`): no RFQ at
+  all, for cases the spec allows without a fresh quotation round (e.g. a genuine repeat/standing
+  order to a known supplier). Every `lineItems[].purchaseItemId` must exist AND its own `category`
+  must agree with the PO's `category` — the same cross-field rule Part 1 already applies between an
+  indent and its purchase item.
+
+Both paths: `supplierId`/`purchaseItemId` existence is checked (404 if missing); `deliveryWarehouseId`,
+if given, is validated against `Warehouse.warehouseId` the same soft-reference-but-validated way FG
+Module Part 1's `warehouseId` is (`ValidationError` 400, not 404 — it's a caller-supplied reference,
+not a resource named in the URL); `paymentTerms` falls back to the quotation's own `paymentTerms`
+(RFQ path) or the supplier's own `paymentTerms` (direct path) when the caller doesn't state one;
+`buyerName` falls back to the caller's own name (`req.user.name`) when omitted. Every PO starts
+`Draft`.
+
+**`lineTotal` / `totalValue` — server-computed, never client-supplied.**
+`lineTotalCalculator.ts`'s `calculateLineTotal` is a pure, isolated, unit-tested function (same
+separation-of-concerns pattern as `landedCostCalculator`/`oeeCalculator`/`bomExplosionEngine`/
+`ctbEvaluator`):
+
+```
+lineTotal = (orderedQty * rate * (1 - discountPct/100)) * (1 + taxPct/100) + freightOther
+```
+
+Missing `discountPct`/`taxPct`/`freightOther` (`null`/`undefined`) are treated as `0`, same
+convention as `calculateLandedCost`. Discount is applied to the base **before** tax (tax is charged
+on the discounted amount, not the gross), and `freightOther` is added **after** tax (freight itself
+isn't taxed by this formula) — both per the client's exact formula, not a general accounting
+convention. **Worked example**: `orderedQty: 10, rate: 100, discountPct: 10, taxPct: 18,
+freightOther: 50` → discounted base `10 * 100 * 0.9 = 900` → taxed `900 * 1.18 = 1062` → `+ 50 =
+1112`. `PurchaseOrder.totalValue` is `sumLineTotals` of every line's already-rounded `lineTotal`,
+itself re-rounded — never re-derived from raw per-line inputs, so it always agrees exactly with
+what the line items themselves show.
+
+**Duplicate detection — warns, does not block.** Per the spec's own framing: "detection, not
+prevention." Before either creation path inserts a PO, every line item is checked against existing
+`PoLineItem`s for the **same supplier**, the **same `purchaseItemId`**, on a PO that is not
+`Cancelled`/`Rejected`, dated within `DUPLICATE_PO_CHECK_WINDOW_DAYS` (`7`, a named constant) of
+today, with a **similar quantity** — within `DUPLICATE_PO_QTY_SIMILARITY_TOLERANCE_PCT` (`20`, also
+named) of the new line's `orderedQty`, either direction, since a genuine duplicate is rarely typed
+with the identical qty down to the decimal. A match never throws — it only appends an entry (the
+existing PO's number/qty/status and a human-readable message) to a `warnings` array folded into the
+success response's `data` alongside the created PO, so a creator can proceed deliberately if it's a
+genuinely intentional repeat order (e.g. an urgent top-up) rather than being hard-blocked.
+
+**Status flow — `Draft → PendingApproval → Approved → SentToSupplier → SupplierConfirmed →
+PartiallyReceived → FullyReceived`, with `OnHold`/`Cancelled`/`Rejected` as branches, enforced with
+the same rigor as Module 2's/Module 9's own status machines** at `PATCH
+/api/purchase-orders/:poNumber/status`:
+
+- **`OnHold` is reachable from any non-terminal status and resumes to EXACTLY the one status it was
+  held from** — not a generic "pick anything" branch. There is no separate `PoStatusHistory` table
+  and no `preHoldStatus` column (see `PoAmendmentHistory`'s own design below); resuming looks up
+  the PO's own amendment-history log for its most recent `fieldChanged: 'status'` / `newValue:
+  'OnHold'` row and reads back that row's `oldValue` — the status the PO genuinely was in the
+  moment it was held. A caller requesting any OTHER status while `OnHold` is rejected with a 400
+  naming the one valid resume target.
+- **`Cancelled`/`Rejected` are reachable from any pre-`FullyReceived` status**, `OnHold` included.
+  **`Cancelled` requires a mandatory `cancellationReason`** in the request body (enforced by a Zod
+  `.refine`, so it's rejected before ever reaching the service) — per the spec's explicit control,
+  a cancellation with no stated reason leaves nothing actionable. `Rejected` carries no equivalent
+  required field — the spec only calls this out for `Cancelled`.
+- **`SupplierConfirmed` also accepts an optional `supplierConfirmedDate`** in the same request —
+  defaults to today when the caller doesn't state one explicitly, since the transition INTO
+  `SupplierConfirmed` is itself the confirmation event.
+- **`PartiallyReceived`/`FullyReceived` are NOT settable directly through this endpoint.** Part 4's
+  GRN acceptance logic is what actually drives both, off received line-item quantities. A direct
+  client attempt to set either is rejected with a 400 naming the GRN flow by name — UNLESS it's the
+  one legitimate case where `PartiallyReceived`/`FullyReceived` IS the correct `OnHold` resume
+  target (the PO genuinely was in that status before being held), which is allowed through the same
+  resume mechanism above.
+
+**No separate `PoStatusHistory` table.** `PoAmendmentHistory` deliberately logs BOTH kinds of
+change — every amendment (`PATCH /:poNumber`) AND every status transition (`PATCH
+/:poNumber/status`, `fieldChanged: 'status'`, `oldValue`/`newValue` the `PoStatus` strings) — into
+the one table. This is what makes `OnHold`'s exact-resume-target design above possible with no
+extra schema field: a dedicated `preHoldStatus` column would be simpler to query but is one more
+place every future write into this model would have to remember to keep in sync; reading it back
+out of the existing append-only log instead makes that drift structurally impossible.
+
+**Amendments — `PATCH /api/purchase-orders/:poNumber`.** For quantity/rate/date/terms changes on a
+PO that hasn't reached `FullyReceived`/`Cancelled`/`Rejected` (rejected on any of those three with a
+400). Every individually changed field — at the PO level (`requiredDeliveryDate`,
+`deliveryWarehouseId`, `paymentTerms`, `freightTerms`, `buyerName`, `remarks`) and per line item
+(`orderedQty`, `rate`, `discountPct`, `taxPct`, `freightOther`, `expectedDeliveryDate`,
+`specification`, addressed by the line's own `id`) — writes its own `PoAmendmentHistory` row
+(old value, new value, who, when, an optional shared `reason` covering every row the one request
+produces). **Decimal-backed numeric line fields are diffed as NUMBERS, not strings**: the stored
+value is a `Prisma.Decimal` (`.toString()` → `"10.00"`) while the incoming value is a plain JS
+number from Zod (`10`) — comparing those as strings would flag every resubmission as "changed" and
+log a spurious history row even when nothing moved; `calculateLineTotal`/`totalValue` are
+recomputed (via a fresh re-sum of every line, not an incremental patch) whenever any of
+`orderedQty`/`rate`/`discountPct`/`taxPct`/`freightOther` changes on a line.
+
+**Overdue — computed at read time, NEVER stored, and this is deliberate.** A PO is overdue when its
+`status` hasn't reached `FullyReceived`/`Cancelled`/`Rejected` (a terminal status makes "on time"
+meaningless) AND `requiredDeliveryDate` has passed. There is intentionally **no** `Overdue` value on
+`PoStatus` and **no** `isOverdue` column on `PurchaseOrder` — computed by `computeIsOverdue` and
+folded into every read (`GET /api/purchase-orders` list items and `GET /:poNumber` detail both
+carry an `isOverdue` boolean), and expressed as the equivalent WHERE-clause predicate for
+`GET /api/purchase-orders?overdue=true|false` so pagination/counts stay correct under that filter
+too. This is called out explicitly because it's an easy thing to "fix" incorrectly later by adding
+a stored status that then needs to be kept in sync with the clock — don't.
+
+**`GET /api/purchase-orders` / `GET /:poNumber`.** List: paginated, filters `status`, `supplierId`,
+`category`, `dateFrom`/`dateTo` (against `poDate`), and the computed `overdue` boolean above.
+Detail: full PO with `lineItems` and `amendmentHistory` (oldest first). **GRN extension point (Part
+4, not built here):** once GRN exists, `PurchaseOrder` gains a `grns Grn[]` relation and this
+detail response will include it alongside `lineItems`/`amendmentHistory` — deliberately no
+placeholder GRN section is built now.
+
+**`poNumber`** is generated via the same shared date-sequence-with-retry-on-collision scheme every
+other sequential id in this codebase uses (prefix `PO`, e.g. `PO-20260820-01`) — see
+`src/utils/sequentialIdGenerator.ts`. Both creation paths wrap the whole insert (PO + line items,
+and — RFQ path only — the source indent's status flip, see below) in
+`generateWithRetry(poNumber => prisma.$transaction(...))`, the same shape FG Module Part 1's `POST
+/api/fg-batches/generate` uses for its batch row + first movement-ledger entry: each attempt opens
+its OWN fresh transaction, so a `poNumber` collision rolls back that WHOLE attempt (never a partial
+PO-without-its-line-items, or a PO created but its source indent left un-converted) and retries
+cleanly with a new number — as opposed to nesting the retry loop INSIDE one long-lived transaction,
+which would leave that transaction un-usably aborted at the Postgres level after the first
+collision (Postgres aborts the whole transaction on a constraint violation regardless of whether
+the calling code catches the JS exception).
+
+**`IndentStatus.ConvertedToPO` — declared but unreachable since Part 1 — finally becomes reachable
+here.** Creating a PO from an RFQ flips the RFQ's source indent to `ConvertedToPO` in the SAME
+transaction as the PO insert (an indent converting to PO and the PO actually existing are one
+atomic fact, never one without the other). Attempting to create a second PO from a DIFFERENT RFQ
+against an indent that's already `ConvertedToPO` is rejected with a 409 — this is a genuine, if
+narrow, race: Part 2 allows an indent to spawn more than one RFQ while it's still `Approved` (e.g.
+parallel quotation rounds), so two RFQs against the same indent can both have a selected quotation
+at once; the first `POST /api/purchase-orders` to reach this indent wins, the second is rejected
+rather than silently producing a second PO against a purchase that's already been placed.
+
+**Permissions.** One new entry, `purchaseOrders` (`read: STORE_AND_PRODUCTION, write: STORE_ONLY`)
+— creating a PO (either path), transitioning its status, and amending it are all Admin/StoreManager,
+the same procurement-decision territory as `purchaseIndents.approve`/`rfq`; all roles read.
+
 ## Assumptions
 
 - Client-supplied primary keys (`modelId`, `lineId`, `teamId`, `orderId`, `partId`, and (FG Module

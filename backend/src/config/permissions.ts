@@ -107,4 +107,9 @@ export const PERMISSIONS = {
   // purchaseIndents.approve; all roles read. See README "Purchase Module
   // Part 2".
   rfq: { read: STORE_AND_PRODUCTION, write: STORE_ONLY },
+  // Purchase Module Part 3 — creating a PO (from an RFQ or directly),
+  // transitioning its status, and amending it are all Admin/StoreManager,
+  // the same procurement-decision territory as purchaseIndents.approve/rfq;
+  // all roles read. See README "Purchase Module Part 3".
+  purchaseOrders: { read: STORE_AND_PRODUCTION, write: STORE_ONLY },
 } as const;
