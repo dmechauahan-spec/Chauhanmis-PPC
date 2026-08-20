@@ -842,14 +842,14 @@ model FgBatch {
   createdBy         String           @map("created_by")
   createdAt         DateTime         @default(now()) @map("created_at")
 
-  order        Order             @relation(fields: [productionOrderId], references: [orderId])
-  qcInspection DailyQcInspection @relation(fields: [qcInspectionId], references: [id])
-  movements    FgStockMovement[]
+  order             Order                @relation(fields: [productionOrderId], references: [orderId])
+  qcInspection      DailyQcInspection    @relation(fields: [qcInspectionId], references: [id])
+  movements         FgStockMovement[]
   // FG Module Part 3 — the real, quantity-aware link to Sales Orders (see
   // SalesOrder/FgReservation's own comments for why this replaced the
   // original plain salesOrderId field, since removed — see this model's own
   // comment above).
-  reservations FgReservation[]
+  reservations      FgReservation[]
   // FG Module Part 4 — every dispatch event that has drawn stock from this
   // batch (see FgDispatchLineItem's own comment).
   dispatchLineItems FgDispatchLineItem[]
@@ -926,13 +926,13 @@ model SalesOrder {
 // spec's "partial-fulfillment tracking" view (GET
 // /api/sales-orders/:salesOrderNo/reservations) reads.
 model FgReservation {
-  id           BigInt               @id @default(autoincrement())
-  fgBatchId    BigInt               @map("fg_batch_id")
-  salesOrderId BigInt               @map("sales_order_id")
-  reservedQty  Decimal              @map("reserved_qty") @db.Decimal(12, 2)
-  status       FgReservationStatus  @default(Active)
-  reservedBy   String               @map("reserved_by")
-  reservedAt   DateTime             @default(now()) @map("reserved_at")
+  id           BigInt              @id @default(autoincrement())
+  fgBatchId    BigInt              @map("fg_batch_id")
+  salesOrderId BigInt              @map("sales_order_id")
+  reservedQty  Decimal             @map("reserved_qty") @db.Decimal(12, 2)
+  status       FgReservationStatus @default(Active)
+  reservedBy   String              @map("reserved_by")
+  reservedAt   DateTime            @default(now()) @map("reserved_at")
 
   fgBatch    FgBatch    @relation(fields: [fgBatchId], references: [id])
   salesOrder SalesOrder @relation(fields: [salesOrderId], references: [id])
@@ -955,13 +955,13 @@ model FgReservation {
 // salesOrderId — so a Sales Order with any dispatch history, like one with
 // any reservation history, can never be silently deleted out from under it.
 model FgDispatch {
-  id           BigInt    @id @default(autoincrement())
-  dispatchNo   String    @unique @map("dispatch_no")
-  salesOrderId BigInt?   @map("sales_order_id")
-  dispatchDate DateTime  @default(now()) @map("dispatch_date") @db.Date
-  dispatchedBy String    @map("dispatched_by")
+  id           BigInt   @id @default(autoincrement())
+  dispatchNo   String   @unique @map("dispatch_no")
+  salesOrderId BigInt?  @map("sales_order_id")
+  dispatchDate DateTime @default(now()) @map("dispatch_date") @db.Date
+  dispatchedBy String   @map("dispatched_by")
   notes        String?
-  createdAt    DateTime  @default(now()) @map("created_at")
+  createdAt    DateTime @default(now()) @map("created_at")
 
   salesOrder SalesOrder?          @relation(fields: [salesOrderId], references: [id])
   lineItems  FgDispatchLineItem[]
@@ -980,10 +980,10 @@ model FgDispatch {
 // creation, same "audit-trail row" convention as FgStockMovement — a
 // dispatch, once made, is a historical fact.
 model FgDispatchLineItem {
-  id         BigInt   @id @default(autoincrement())
-  dispatchId BigInt   @map("dispatch_id")
-  fgBatchId  BigInt   @map("fg_batch_id")
-  quantity   Decimal  @db.Decimal(12, 2)
+  id         BigInt  @id @default(autoincrement())
+  dispatchId BigInt  @map("dispatch_id")
+  fgBatchId  BigInt  @map("fg_batch_id")
+  quantity   Decimal @db.Decimal(12, 2)
 
   dispatch FgDispatch @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
   fgBatch  FgBatch    @relation(fields: [fgBatchId], references: [id])
@@ -1078,20 +1078,22 @@ enum PurchaseCategory {
 }
 
 model Supplier {
-  id            BigInt   @id @default(autoincrement())
-  supplierCode  String   @unique @map("supplier_code")
-  supplierName  String   @map("supplier_name")
-  gstNumber     String?  @map("gst_number")
-  contactPerson String?  @map("contact_person")
+  id            BigInt  @id @default(autoincrement())
+  supplierCode  String  @unique @map("supplier_code")
+  supplierName  String  @map("supplier_name")
+  gstNumber     String? @map("gst_number")
+  contactPerson String? @map("contact_person")
   phone         String?
   email         String?
   address       String?
-  paymentTerms  String?  @map("payment_terms")
-  isActive      Boolean  @default(true) @map("is_active")
+  paymentTerms  String? @map("payment_terms")
+  isActive      Boolean @default(true) @map("is_active")
 
   // Purchase Module Part 2 — see README "Purchase Module Part 2".
   rfqInvitations RfqSupplier[]
   quotations     SupplierQuotation[]
+  // Purchase Module Part 3 — see README "Purchase Module Part 3".
+  purchaseOrders PurchaseOrder[]
 
   @@map("suppliers")
 }
@@ -1118,6 +1120,8 @@ model PurchaseItem {
 
   rmInventory     RmInventory?     @relation(fields: [rmPartId], references: [partId])
   purchaseIndents PurchaseIndent[]
+  // Purchase Module Part 3 — see README "Purchase Module Part 3".
+  poLineItems     PoLineItem[]
 
   @@index([category])
   @@map("purchase_items")
@@ -1153,27 +1157,27 @@ enum IndentSourceType {
 }
 
 model PurchaseIndent {
-  id               BigInt           @id @default(autoincrement())
-  indentNo         String           @unique @map("indent_no")
-  indentDate       DateTime         @default(now()) @map("indent_date") @db.Date
-  department       String
-  requestedBy      String           @map("requested_by")
-  category         PurchaseCategory
-  purchaseItemId   BigInt           @map("purchase_item_id")
-  specification    String?
-  qty              Decimal          @db.Decimal(12, 2)
-  uom              String
-  requiredDate     DateTime?        @map("required_date") @db.Date
-  priority         IndentPriority   @default(Medium)
-  reason           String?
-  referenceOrderId String?          @map("reference_order_id")
+  id                BigInt           @id @default(autoincrement())
+  indentNo          String           @unique @map("indent_no")
+  indentDate        DateTime         @default(now()) @map("indent_date") @db.Date
+  department        String
+  requestedBy       String           @map("requested_by")
+  category          PurchaseCategory
+  purchaseItemId    BigInt           @map("purchase_item_id")
+  specification     String?
+  qty               Decimal          @db.Decimal(12, 2)
+  uom               String
+  requiredDate      DateTime?        @map("required_date") @db.Date
+  priority          IndentPriority   @default(Medium)
+  reason            String?
+  referenceOrderId  String?          @map("reference_order_id")
   // Added now for a later part's auto-generation to write into (e.g. a BOM
   // shortage or IMS min-stock trigger) — unused by anything in Part 1 beyond
   // defaulting to Manual/null on a person-created indent. See README.
   sourceType        IndentSourceType @default(Manual) @map("source_type")
   sourceReferenceId String?          @map("source_reference_id")
-  status           IndentStatus     @default(Draft)
-  createdAt        DateTime         @default(now()) @map("created_at")
+  status            IndentStatus     @default(Draft)
+  createdAt         DateTime         @default(now()) @map("created_at")
 
   purchaseItem    PurchaseItem            @relation(fields: [purchaseItemId], references: [id])
   approvalHistory IndentApprovalHistory[]
@@ -1181,7 +1185,13 @@ model PurchaseIndent {
   // Approved indent may spawn more than one RFQ over time (e.g. a re-RFQ
   // after every quotation on the first one was rejected), so this is a
   // plain one-to-many, not a 1:1.
-  rfqs Rfq[]
+  rfqs            Rfq[]
+  // Purchase Module Part 3 — see README "Purchase Module Part 3". Also a
+  // plain one-to-many for the same reason as `rfqs` above (a re-RFQ'd indent
+  // could in principle see more than one PO created against it over time,
+  // though createPurchaseOrder's ConvertedToPO guard means at most one ever
+  // actually succeeds in practice today).
+  purchaseOrders  PurchaseOrder[]
 
   @@index([status])
   @@index([category])
@@ -1228,9 +1238,11 @@ model Rfq {
   createdBy String   @map("created_by")
   createdAt DateTime @default(now()) @map("created_at")
 
-  indent     PurchaseIndent      @relation(fields: [indentId], references: [id])
-  suppliers  RfqSupplier[]
-  quotations SupplierQuotation[]
+  indent         PurchaseIndent      @relation(fields: [indentId], references: [id])
+  suppliers      RfqSupplier[]
+  quotations     SupplierQuotation[]
+  // Purchase Module Part 3 — see README "Purchase Module Part 3".
+  purchaseOrders PurchaseOrder[]
 
   @@index([indentId])
   @@map("rfqs")
@@ -1281,4 +1293,142 @@ model SupplierQuotation {
   @@unique([rfqId, supplierId])
   @@index([rfqId])
   @@map("supplier_quotations")
+}
+
+// ============================================================================
+// PURCHASE MODULE — PART 3: PURCHASE ORDER (see README "Purchase Module Part
+// 3"). An Approved indent's selected RFQ quotation (Part 2) becomes a PO
+// here — or, for a repeat/standing order to a known supplier, a PO is
+// created directly with no RFQ at all. This part builds PO creation, the
+// full status-transition state machine, and amendments; Part 4 (GRN + QC +
+// Inventory) is what actually drives PartiallyReceived/FullyReceived and
+// links GRNs back onto this PO — see PurchaseOrder's own comment below for
+// that extension point.
+// ============================================================================
+
+enum PoStatus {
+  Draft
+  PendingApproval
+  Approved
+  SentToSupplier
+  SupplierConfirmed
+  PartiallyReceived
+  FullyReceived
+  OnHold
+  Cancelled
+  Rejected
+}
+
+// One Purchase Order — either spawned from Part 2's selected
+// SupplierQuotation (`indentId` + `rfqId` both set; supplier/category/line
+// items pulled from the RFQ's source indent and the selected quotation) or
+// created directly against a known supplier with no RFQ at all (`indentId`/
+// `rfqId` both null) — see README "Purchase Module Part 3" for when a direct
+// PO is legitimate (e.g. a repeat/standing order) and for the
+// duplicate-detection design that runs on every create regardless of path.
+//
+// `totalValue` is always server-computed — the sum of every line's
+// `lineTotal`, itself server-computed by `lineTotalCalculator.ts` — never
+// client-supplied, same convention as every other derived total in this
+// codebase.
+//
+// **Overdue is NOT a status on this enum and never will be** — it's computed
+// at read time (`status` not yet `FullyReceived`/`Cancelled`/`Rejected` AND
+// `requiredDeliveryDate` has passed), never stored. See README.
+//
+// GRN extension point (Part 4, not built here): once GRN exists, this model
+// gains a `grns Grn[]` back-relation and `GET /:poNumber`'s detail response
+// will include it alongside `lineItems`/`amendmentHistory` — no change
+// needed on THIS model beyond adding that one relation field when Part 4
+// lands.
+model PurchaseOrder {
+  id                    BigInt           @id @default(autoincrement())
+  poNumber              String           @unique @map("po_number")
+  poDate                DateTime         @default(now()) @map("po_date") @db.Date
+  supplierId            BigInt           @map("supplier_id")
+  category              PurchaseCategory
+  indentId              BigInt?          @map("indent_id")
+  rfqId                 BigInt?          @map("rfq_id")
+  requiredDeliveryDate  DateTime?        @map("required_delivery_date") @db.Date
+  deliveryWarehouseId   String?          @map("delivery_warehouse_id")
+  paymentTerms          String?          @map("payment_terms")
+  freightTerms          String?          @map("freight_terms")
+  buyerName             String           @map("buyer_name")
+  status                PoStatus         @default(Draft)
+  remarks               String?
+  totalValue            Decimal          @default(0) @map("total_value") @db.Decimal(14, 2)
+  supplierConfirmedDate DateTime?        @map("supplier_confirmed_date") @db.Date
+  cancellationReason    String?          @map("cancellation_reason")
+  createdBy             String           @map("created_by")
+  createdAt             DateTime         @default(now()) @map("created_at")
+
+  supplier         Supplier             @relation(fields: [supplierId], references: [id])
+  indent           PurchaseIndent?      @relation(fields: [indentId], references: [id])
+  rfq              Rfq?                 @relation(fields: [rfqId], references: [id])
+  lineItems        PoLineItem[]
+  amendmentHistory PoAmendmentHistory[]
+
+  @@index([supplierId])
+  @@index([status])
+  @@index([category])
+  @@index([indentId])
+  @@index([rfqId])
+  @@map("purchase_orders")
+}
+
+// `purchaseItemId` is a real FK (not a soft string reference) — same
+// convention as PurchaseIndent.purchaseItemId. `receivedQty`/`acceptedQty`/
+// `rejectedQty` all default 0 here and are exclusively Part 4's (GRN + QC)
+// to write — nothing in this part ever touches them beyond the schema
+// default.
+model PoLineItem {
+  id                   BigInt    @id @default(autoincrement())
+  poId                 BigInt    @map("po_id")
+  purchaseItemId       BigInt    @map("purchase_item_id")
+  specification        String?
+  orderedQty           Decimal   @map("ordered_qty") @db.Decimal(12, 2)
+  uom                  String
+  rate                 Decimal   @db.Decimal(12, 2)
+  discountPct          Decimal?  @map("discount_pct") @db.Decimal(5, 2)
+  taxPct               Decimal?  @map("tax_pct") @db.Decimal(5, 2)
+  freightOther         Decimal   @default(0) @map("freight_other") @db.Decimal(12, 2)
+  expectedDeliveryDate DateTime? @map("expected_delivery_date") @db.Date
+  lineTotal            Decimal   @map("line_total") @db.Decimal(14, 2)
+  receivedQty          Decimal   @default(0) @map("received_qty") @db.Decimal(12, 2)
+  acceptedQty          Decimal   @default(0) @map("accepted_qty") @db.Decimal(12, 2)
+  rejectedQty          Decimal   @default(0) @map("rejected_qty") @db.Decimal(12, 2)
+
+  po           PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade)
+  purchaseItem PurchaseItem  @relation(fields: [purchaseItemId], references: [id])
+
+  @@index([poId])
+  @@index([purchaseItemId])
+  @@map("po_line_items")
+}
+
+// Every changed field on an amendment (PATCH /:poNumber) writes a row here —
+// AND, deliberately, so does every status transition (PATCH
+// /:poNumber/status; `fieldChanged: 'status'`, `oldValue`/`newValue` the
+// PoStatus strings). There is NO separate PoStatusHistory table. Reusing
+// this one log for both is what lets OnHold's "returnable to where it was"
+// (README "Purchase Module Part 3") work with no extra schema field:
+// resuming looks up this table's most recent `fieldChanged: 'status'` /
+// `newValue: 'OnHold'` row for the PO and reads back ITS `oldValue`, rather
+// than needing a dedicated `preHoldStatus` column that every other write
+// would have to remember to keep in sync.
+model PoAmendmentHistory {
+  id           BigInt   @id @default(autoincrement())
+  poId         BigInt   @map("po_id")
+  fieldChanged String   @map("field_changed")
+  oldValue     String?  @map("old_value")
+  newValue     String?  @map("new_value")
+  changedBy    String   @map("changed_by")
+  changedAt    DateTime @default(now()) @map("changed_at")
+  reason       String?
+
+  po PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade)
+
+  @@index([poId])
+  @@index([poId, fieldChanged, newValue])
+  @@map("po_amendment_history")
 }
