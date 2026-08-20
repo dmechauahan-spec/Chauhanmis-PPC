@@ -2544,6 +2544,111 @@ The **frontend UI** for the FG Module — Parts 1 through 5 alike — is explici
 for this backend work and is a separate, later set of prompts, same as the Client Flow addition's
 own closing note.
 
+### Purchase Module Part 1 — Suppliers, Purchase Items, Indent/Approval
+
+First of 5 parts building a new, broader Purchase Order lifecycle module: Indent -> Approval ->
+RFQ/Quotation -> PO -> GRN -> QC -> Inventory — integrated across BOM, PPC, IMS, Department
+Requirements, Supplier, GRN, QC, Inventory, and Accounts, per the client's own spec, covering every
+purchase category (Raw Material through Stationery and Services), configurable, not just a PO
+creation screen.
+
+> **⚠️ This is a DIFFERENT thing from Module 9's existing Purchase Requisition — read this before
+> touching either module.**
+>
+> Module 9 (`purchaseRequisitions`) is a narrow, already-working, RM-only flow: consolidated
+> across-order shortage demand -> auto-generated PR -> `Fulfilled` -> credits `rm_inventory`. It is
+> **untouched** by this module and keeps working exactly as it does now — nothing in Part 1 reads
+> from or writes to `purchase_requisitions`, `pr_line_items`, or `pr_status_history`.
+>
+> This module is the broader, multi-category, full-lifecycle system the client's spec describes,
+> built as entirely new tables (`suppliers`, `purchase_items`, `purchase_indents`,
+> `indent_approval_history`). Where the two conceptually overlap — both eventually credit
+> stock — this module reuses Module 1's `adjustStock` directly for the `RawMaterial` category
+> specifically, the same way Module 9 already does, rather than duplicating RM stock bookkeeping a
+> second time. That reuse doesn't happen yet in Part 1 (there's no GRN/receipt step yet to trigger
+> it) — it's called out here because `PurchaseItem.rmPartId` is the field that makes it possible
+> once Part 4 (GRN) exists.
+
+**`PurchaseCategory` — one shared enum, not a per-model status string.** `RawMaterial`,
+`Consumables`, `PackingMaterial`, `MaintenanceSpares`, `Safety`, `StationeryOffice`,
+`ItElectronics`, `Services`. Defined once, imported by every model across all 5 parts of this
+module (`PurchaseItem.category`, `PurchaseIndent.category`, and later parts' RFQ/PO line items) —
+this is the mechanism that makes "Raw Material se lekar Stationery aur Services tak sab purchase
+categories configurable hon" actually true: adding a category means one enum value, not a schema
+change per part.
+
+**`Supplier` — plain master data**, full CRUD at `/api/suppliers`. `Admin`-only write, all roles
+read — same convention as Warehouses/Products/Lines/Machines. No FK from anything yet in Part 1;
+later parts (RFQ, PO) will reference it.
+
+**`PurchaseItem` — the multi-category item master, and the RM-linkage design.** Full CRUD at
+`/api/purchase-items`, `Admin`-only write, all roles read. The load-bearing field is `rmPartId`:
+
+- When `category = RawMaterial`, `rmPartId` is **required** and validated (service layer, not just
+  the DB FK) to reference a real, existing `rm_inventory.partId` — this is the deliberate link back
+  to the **already-existing** RM stock system, so an RM purchase item never creates a second,
+  conflicting stock number for the same physical material. `PurchaseItem.rmPartId` is a real Prisma
+  relation to `RmInventory` (`onDelete: SetNull`), not a soft/unenforced string reference.
+- For **every other category**, `rmPartId` must be `null` — supplying one is rejected. Those
+  categories (Consumables, PackingMaterial, MaintenanceSpares, Safety, StationeryOffice,
+  ItElectronics, Services) get their own stock ledger in a later part of this module, deliberately
+  not built yet; a non-null `rmPartId` on one of them today would be meaningless at best and
+  misleading about which ledger governs the item at worst.
+- The rule applies to the **resulting merged state** on `PATCH`, not just the fields present in a
+  given request — switching `category` to `RawMaterial` without also supplying `rmPartId` in the
+  same request is rejected exactly like a `POST` with the same gap, and switching `category` away
+  from `RawMaterial` while an old `rmPartId` is still on the row is rejected until it's explicitly
+  cleared (`rmPartId: null`) in the same request. See `purchaseItems.service.ts`'s
+  `validateRmLinkage`.
+
+**`PurchaseIndent` / `IndentApprovalHistory` — the requirement/requisition entity.**
+`POST /api/purchase-indents` creates a `Draft` indent naming a department, category, a specific
+`PurchaseItem`, quantity/UOM, priority, and optional required date/reason/reference order.
+`requestedBy` is server-derived from the caller's identity (`req.user.name`), never
+client-supplied — same convention as Module 9's `generatedBy`. The indent's own `category` field
+must agree with the referenced `PurchaseItem.category`; a mismatch is rejected — the two fields
+exist separately (an indent is independently filterable/listable by category without a join) but
+must never disagree about what kind of purchase this actually is.
+
+**Any authenticated role can create/submit an indent — a deliberate deviation from every other
+write gate in this module (and most of the codebase).** Department, office, maintenance, and
+production requests all originate an indent per the client's spec, not just Store — so
+`PERMISSIONS.purchaseIndents.write` is `STORE_AND_PRODUCTION`, which (like every `read` entry in
+`permissions.ts`, once `Admin`'s automatic `authorize()` pass is added) resolves to literally every
+role, on both `POST /` and `POST /:id/submit`. `PERMISSIONS.purchaseIndents.approve` is a separate,
+narrower field — not the usual two-entry `{ read, write }` shape — restricting `POST /:id/approve`
+and `POST /:id/reject` to `Admin`/`StoreManager` only, the same procurement-decision split
+`purchaseRequisitions` already uses.
+
+**Status flow — `Draft -> Submitted -> {Approved | Rejected}`, enforced with the same rigor as
+Module 2's/Module 9's own status machines.** `Draft -> Approved` directly (skipping `Submitted`) is
+rejected; re-submitting an already-`Submitted` indent is rejected; approving or rejecting a
+non-`Submitted` indent (including a `Rejected` or `Approved` one — both terminal in Part 1) is
+rejected. Every transition writes an `IndentApprovalHistory` row (`action`, `actionBy`, optional
+`remarks`, `actionAt`) — same audit-trail shape as Module 9's `PrStatusHistory`. **Rejecting
+requires `remarks`** (a separate, stricter Zod schema from `approve`'s optional `remarks`) — a
+rejection with no stated reason leaves the requester with nothing actionable. `GET /:id` returns
+the full approval-history timeline ordered oldest-first alongside the indent.
+
+`ConvertedToPO` is declared on `IndentStatus` but **unreachable in Part 1** — there is no PO yet in
+this codebase for an approved indent to convert into. A later part of this module will add the
+transition once PO creation exists.
+
+**`sourceType` / `sourceReferenceId` — added now for a later part's use, inert today.** Every
+indent created through Part 1's own `POST /` defaults to `sourceType: Manual` (a person filling out
+the form) with no `sourceReferenceId`. The other five enum values (`BomShortage`, `ImsMinStock`,
+`PpcRequirement`, `MaintenanceRequirement`, `DepartmentRequest`) are declared now so a later part's
+auto-generation (e.g. a BOM shortage or IMS min-stock trigger creating an indent automatically) has
+a stable column to write into immediately, rather than needing a schema change when that
+auto-generation is actually built. Nothing in Part 1 writes anything other than `Manual` — this is
+the same "value declared ahead of the feature that uses it" pattern `IndentStatus.ConvertedToPO`
+above follows.
+
+**`indentNo`** is generated via the same shared date-sequence-with-retry-on-collision scheme Module
+3's `logId` / Module 9's `prNumber` / FG Module Part 4's `dispatchNo` all use (prefix `IND`, e.g.
+`IND-20260820-01`) — see `src/utils/sequentialIdGenerator.ts`. No new ID scheme was invented for
+this module.
+
 ## Assumptions
 
 - Client-supplied primary keys (`modelId`, `lineId`, `teamId`, `orderId`, `partId`, and (FG Module

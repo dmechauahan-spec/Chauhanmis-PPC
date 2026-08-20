@@ -84,4 +84,21 @@ export const PERMISSIONS = {
   // `orderStatusDashboard` — write unused (no write routes exist). See
   // README "FG Module Part 5".
   fgDashboard: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY },
+
+  // --- Purchase Module (Part 1) — see README "Purchase Module Part 1". ---
+  // Suppliers/Purchase Items are master data, same Admin-only-write
+  // convention as Products/Lines/Machines above.
+  suppliers: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY },
+  purchaseItems: { read: STORE_AND_PRODUCTION, write: ADMIN_ONLY },
+  // Purchase Indents deliberately deviate from every write entry above:
+  // `write` (create + submit) is STORE_AND_PRODUCTION, which — same as
+  // every `read` entry in this file — resolves to literally every
+  // authenticated role once Admin's automatic pass is added, because the
+  // client's spec has department/office/maintenance/production requests all
+  // originate an indent, not just Store. `approve` is its own, narrower
+  // field (not the usual two-entry read/write shape) restricting
+  // approve/reject to Admin/StoreManager only, the same
+  // procurement-decision split PERMISSIONS already uses for
+  // purchaseRequisitions.
+  purchaseIndents: { read: STORE_AND_PRODUCTION, write: STORE_AND_PRODUCTION, approve: STORE_ONLY },
 } as const;

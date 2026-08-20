@@ -36,6 +36,9 @@ import salesOrdersRouter from './modules/salesOrders/salesOrders.routes';
 import fgDispatchRouter from './modules/fgDispatch/fgDispatch.routes';
 import fgDashboardRouter, { fgBatchTraceRouter } from './modules/fgDashboard/fgDashboard.routes';
 import authRouter from './modules/auth/auth.routes';
+import suppliersRouter from './modules/suppliers/suppliers.routes';
+import purchaseItemsRouter from './modules/purchaseItems/purchaseItems.routes';
+import purchaseIndentsRouter from './modules/purchaseIndents/purchaseIndents.routes';
 
 installBigIntJsonSupport();
 
@@ -96,6 +99,10 @@ export function createApp(): Express {
   app.use('/api/fg-dashboard', fgDashboardRouter);
   app.use('/api/fg-batches', fgBatchTraceRouter);
   app.use('/api/auth', authRouter);
+  // Purchase Module Part 1 — see README "Purchase Module Part 1".
+  app.use('/api/suppliers', suppliersRouter);
+  app.use('/api/purchase-items', purchaseItemsRouter);
+  app.use('/api/purchase-indents', purchaseIndentsRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

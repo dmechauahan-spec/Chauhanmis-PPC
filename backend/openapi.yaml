@@ -62,6 +62,9 @@ tags:
   - name: Sales Orders
   - name: FG Dispatches
   - name: FG Dashboard
+  - name: Suppliers
+  - name: Purchase Items
+  - name: Purchase Indents
 
 components:
   securitySchemes:
@@ -1242,6 +1245,98 @@ components:
         warehouseName: { type: string }
         location: { type: string, nullable: true }
         isActive: { type: boolean, default: true }
+
+    Supplier:
+      type: object
+      description: Purchase Module Part 1. Plain master data — see README "Purchase Module Part 1".
+      properties:
+        id: { type: integer, readOnly: true }
+        supplierCode: { type: string, example: SUP-001 }
+        supplierName: { type: string }
+        gstNumber: { type: string, nullable: true }
+        contactPerson: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        address: { type: string, nullable: true }
+        paymentTerms: { type: string, nullable: true }
+        isActive: { type: boolean, default: true }
+
+    PurchaseItem:
+      type: object
+      description: >
+        Purchase Module Part 1. Multi-category item master. See README "Purchase Module Part 1"
+        for the full rmPartId <-> rm_inventory linkage design (required + validated for
+        RawMaterial, forbidden for every other category).
+      properties:
+        id: { type: integer, readOnly: true }
+        itemCode: { type: string, example: PI-001 }
+        itemName: { type: string }
+        category:
+          type: string
+          enum: [RawMaterial, Consumables, PackingMaterial, MaintenanceSpares, Safety, StationeryOffice, ItElectronics, Services]
+        specification: { type: string, nullable: true }
+        uom: { type: string, example: Kg }
+        rmPartId:
+          type: string
+          nullable: true
+          description: Required and validated against rm_inventory.partId when category = RawMaterial; must be null otherwise.
+        minStock: { type: number, nullable: true }
+        maxStock: { type: number, nullable: true }
+        isActive: { type: boolean, default: true }
+
+    PurchaseIndent:
+      type: object
+      description: >
+        Purchase Module Part 1. Draft -> Submitted -> {Approved | Rejected} status flow — see
+        README "Purchase Module Part 1". ConvertedToPO is declared on IndentStatus but
+        unreachable in Part 1 (no PO exists yet to convert into).
+      properties:
+        id: { type: integer, readOnly: true }
+        indentNo: { type: string, readOnly: true, example: IND-20260820-01, description: Generated via the shared sequential-id scheme (Module 3/9/FG Part 4). }
+        indentDate: { type: string, format: date, readOnly: true }
+        department: { type: string }
+        requestedBy: { type: string, readOnly: true, description: 'The authenticated caller''s name — never client-supplied.' }
+        category:
+          type: string
+          enum: [RawMaterial, Consumables, PackingMaterial, MaintenanceSpares, Safety, StationeryOffice, ItElectronics, Services]
+          description: Must match the referenced purchaseItem's own category.
+        purchaseItemId: { type: integer }
+        specification: { type: string, nullable: true }
+        qty: { type: number }
+        uom: { type: string }
+        requiredDate: { type: string, format: date, nullable: true }
+        priority: { type: string, enum: [Low, Medium, High, Urgent], default: Medium }
+        reason: { type: string, nullable: true }
+        referenceOrderId: { type: string, nullable: true }
+        sourceType:
+          type: string
+          enum: [Manual, BomShortage, ImsMinStock, PpcRequirement, MaintenanceRequirement, DepartmentRequest]
+          default: Manual
+          description: Only Manual is wired to anything in Part 1; the rest are declared now for a later part's auto-generation to write into.
+        sourceReferenceId: { type: string, nullable: true }
+        status:
+          type: string
+          enum: [Draft, Submitted, Approved, Rejected, ConvertedToPO]
+          readOnly: true
+        createdAt: { type: string, format: date-time, readOnly: true }
+        purchaseItem:
+          $ref: '#/components/schemas/PurchaseItem'
+          description: Included on list/detail responses.
+        approvalHistory:
+          type: array
+          readOnly: true
+          description: Detail endpoint only — full timeline, oldest first.
+          items: { $ref: '#/components/schemas/IndentApprovalHistory' }
+
+    IndentApprovalHistory:
+      type: object
+      properties:
+        id: { type: integer, readOnly: true }
+        indentId: { type: integer, readOnly: true }
+        action: { type: string, enum: [Submitted, Approved, Rejected] }
+        actionBy: { type: string, readOnly: true }
+        remarks: { type: string, nullable: true, description: Required when action = Rejected. }
+        actionAt: { type: string, format: date-time, readOnly: true }
 
     FgBatch:
       type: object
@@ -4188,3 +4283,283 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/FgBatchTrace' }
         '404': { description: Unknown fgBatchNo }
+
+  /suppliers:
+    get:
+      tags: [Suppliers]
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: isActive
+          in: query
+          schema: { type: boolean }
+        - name: search
+          in: query
+          schema: { type: string }
+          description: Matches against supplierCode or supplierName.
+      responses:
+        '200': { description: Paginated list of suppliers }
+    post:
+      tags: [Suppliers]
+      description: Admin-only write (master data), all roles read — see README "Purchase Module Part 1".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Supplier' }
+      responses:
+        '201': { description: Created }
+        '400': { description: Validation error }
+        '403': { description: Non-Admin caller }
+        '409': { description: Duplicate supplierCode (generic P2002 mapping) }
+
+  /suppliers/{code}:
+    parameters:
+      - name: code
+        in: path
+        required: true
+        schema: { type: string }
+        description: supplierCode.
+    get:
+      tags: [Suppliers]
+      responses:
+        '200': { description: Supplier }
+        '404': { description: Not found }
+    patch:
+      tags: [Suppliers]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Supplier' }
+      responses:
+        '200': { description: Updated }
+        '400': { description: No fields provided }
+        '404': { description: Not found }
+    delete:
+      tags: [Suppliers]
+      description: Hard delete — no PO/RFQ model exists yet in this module to reference a supplier.
+      responses:
+        '200': { description: Deleted }
+        '404': { description: Not found }
+
+  /purchase-items:
+    get:
+      tags: [Purchase Items]
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: category
+          in: query
+          schema: { type: string, enum: [RawMaterial, Consumables, PackingMaterial, MaintenanceSpares, Safety, StationeryOffice, ItElectronics, Services] }
+        - name: isActive
+          in: query
+          schema: { type: boolean }
+        - name: search
+          in: query
+          schema: { type: string }
+          description: Matches against itemCode or itemName.
+      responses:
+        '200': { description: Paginated list of purchase items }
+    post:
+      tags: [Purchase Items]
+      description: >
+        Admin-only write (master data), all roles read. rmPartId is required and validated
+        against rm_inventory.partId when category = RawMaterial, and rejected (must be null) for
+        every other category — see README "Purchase Module Part 1".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PurchaseItem' }
+      responses:
+        '201': { description: Created }
+        '400': { description: Validation error }
+        '403': { description: Non-Admin caller }
+        '404': { description: rmPartId does not exist in rm_inventory }
+        '409': { description: 'Duplicate itemCode, missing rmPartId for RawMaterial, or rmPartId supplied for a non-RawMaterial category' }
+
+  /purchase-items/{code}:
+    parameters:
+      - name: code
+        in: path
+        required: true
+        schema: { type: string }
+        description: itemCode.
+    get:
+      tags: [Purchase Items]
+      responses:
+        '200': { description: PurchaseItem }
+        '404': { description: Not found }
+    patch:
+      tags: [Purchase Items]
+      description: >
+        The rmPartId <-> category rule is validated against the RESULTING merged state (existing
+        row + this request's fields), not just the fields present in the request body.
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PurchaseItem' }
+      responses:
+        '200': { description: Updated }
+        '400': { description: No fields provided }
+        '404': { description: 'Not found, or rmPartId does not exist in rm_inventory' }
+        '409': { description: rmPartId <-> category rule violated on the resulting state }
+    delete:
+      tags: [Purchase Items]
+      description: Hard delete. Fails (400, generic P2003 mapping) if a Purchase Indent still references this item.
+      responses:
+        '200': { description: Deleted }
+        '404': { description: Not found }
+
+  /purchase-indents:
+    get:
+      tags: [Purchase Indents]
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: status
+          in: query
+          schema: { type: string, enum: [Draft, Submitted, Approved, Rejected, ConvertedToPO] }
+        - name: category
+          in: query
+          schema: { type: string, enum: [RawMaterial, Consumables, PackingMaterial, MaintenanceSpares, Safety, StationeryOffice, ItElectronics, Services] }
+        - name: department
+          in: query
+          schema: { type: string }
+        - name: priority
+          in: query
+          schema: { type: string, enum: [Low, Medium, High, Urgent] }
+        - name: sourceType
+          in: query
+          schema: { type: string, enum: [Manual, BomShortage, ImsMinStock, PpcRequirement, MaintenanceRequirement, DepartmentRequest] }
+      responses:
+        '200': { description: Paginated list of purchase indents, each including its purchaseItem }
+    post:
+      tags: [Purchase Indents]
+      summary: Creates a Draft indent — reachable by ANY authenticated role
+      description: >
+        Deliberate deviation from every other write gate in this module: department/office/
+        maintenance/production requests all originate an indent, not just Store — see README
+        "Purchase Module Part 1". requestedBy is server-derived, never client-supplied. category
+        must match the referenced purchaseItem's own category.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [department, category, purchaseItemId, qty, uom]
+              properties:
+                department: { type: string }
+                category: { type: string, enum: [RawMaterial, Consumables, PackingMaterial, MaintenanceSpares, Safety, StationeryOffice, ItElectronics, Services] }
+                purchaseItemId: { type: integer }
+                specification: { type: string }
+                qty: { type: number }
+                uom: { type: string }
+                requiredDate: { type: string, format: date }
+                priority: { type: string, enum: [Low, Medium, High, Urgent], default: Medium }
+                reason: { type: string }
+                referenceOrderId: { type: string }
+                sourceType: { type: string, enum: [Manual, BomShortage, ImsMinStock, PpcRequirement, MaintenanceRequirement, DepartmentRequest], default: Manual }
+                sourceReferenceId: { type: string }
+      responses:
+        '201':
+          description: Created (Draft)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PurchaseIndent' }
+        '400': { description: Validation error }
+        '404': { description: Unknown purchaseItemId }
+        '409': { description: category does not match the referenced purchase item's own category }
+
+  /purchase-indents/{indentId}:
+    parameters:
+      - name: indentId
+        in: path
+        required: true
+        schema: { type: integer }
+        description: PurchaseIndent.id.
+    get:
+      tags: [Purchase Indents]
+      description: Includes the full approvalHistory timeline, oldest first.
+      responses:
+        '200':
+          description: PurchaseIndent
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PurchaseIndent' }
+        '404': { description: Not found }
+
+  /purchase-indents/{indentId}/submit:
+    parameters:
+      - name: indentId
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [Purchase Indents]
+      summary: Draft -> Submitted
+      description: Reachable by any authenticated role, same as create. Logs an IndentApprovalHistory row (action Submitted).
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PurchaseIndent' }
+        '400': { description: Indent is not currently Draft }
+        '404': { description: Not found }
+
+  /purchase-indents/{indentId}/approve:
+    parameters:
+      - name: indentId
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [Purchase Indents]
+      summary: Submitted -> Approved (Admin/StoreManager only)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                remarks: { type: string }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PurchaseIndent' }
+        '400': { description: Indent is not currently Submitted }
+        '403': { description: Caller is neither Admin nor StoreManager }
+        '404': { description: Not found }
+
+  /purchase-indents/{indentId}/reject:
+    parameters:
+      - name: indentId
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [Purchase Indents]
+      summary: Submitted -> Rejected (Admin/StoreManager only)
+      description: remarks is REQUIRED — a rejection with no stated reason leaves the requester with nothing actionable.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [remarks]
+              properties:
+                remarks: { type: string }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PurchaseIndent' }
+        '400': { description: 'Indent is not currently Submitted, or remarks missing' }
+        '403': { description: Caller is neither Admin nor StoreManager }
+        '404': { description: Not found }
