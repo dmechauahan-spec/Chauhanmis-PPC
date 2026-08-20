@@ -2891,6 +2891,117 @@ rather than silently producing a second PO against a purchase that's already bee
 — creating a PO (either path), transitioning its status, and amending it are all Admin/StoreManager,
 the same procurement-decision territory as `purchaseIndents.approve`/`rfq`; all roles read.
 
+### Purchase Module Part 4 — GRN + QC + Inventory
+
+A PO's goods actually arrive here. `POST /api/grn` records one delivery event (a PO can see several
+over time — partial deliveries) against a `PurchaseOrder`; each line optionally routes through
+incoming QC (`POST /api/grn/:grnNo/line-items/:id/qc-inspect`) before it becomes usable stock; the
+parent PO's `status` and every touched `PoLineItem`'s `receivedQty`/`acceptedQty`/`rejectedQty`
+update automatically as a result. New folder `src/modules/grn/`, new API prefix `/api/grn`.
+
+**Three QC-flavored things now exist in this codebase — do not conflate any of them:**
+
+| Name | Module | What it inspects |
+|---|---|---|
+| `QcBatch` | Module 13 | Traceability metadata (batch/serial numbers) for an order's own output — not a pass/fail judgment at all. |
+| `DailyQcInspection` | Client Flow Part 3 | **Production output** — what THIS factory made, on the floor, per order/day. |
+| `GrnQcInspection` | **This part** | **Incoming material** — what a SUPPLIER delivered, against a GRN line. |
+
+`GrnQcInspection` is a deliberately different model from `DailyQcInspection` (not a shared/reused
+table, not a subtype) — same naming-clarity principle the FG module's "QC Batches vs. QC
+Inspections" note already established for the other two. If you're about to touch "QC" anything in
+this codebase, check which of these three you actually mean first.
+
+**The single most important design decision in this part: RM reuses `adjustStock`, every other
+category gets a brand-new ledger.** `PurchaseItem.category = RawMaterial` items keep crediting the
+**already-existing** `rm_inventory`/`rm_transactions` system — `creditPurchaseItemStock`
+(`grn/inventoryCrediting.service.ts`) calls Module 1's own `adjustStock` directly (imported, never
+re-implemented) against the `rm_inventory` row linked via `PurchaseItem.rmPartId`, with reason
+`"GRN Receipt: <grnNo>"`. **Every other category** (`Consumables`, `PackingMaterial`,
+`MaintenanceSpares`, `Safety`, `StationeryOffice`, `ItElectronics`, `Services`) credits the two
+tables this part adds — `GeneralInventoryStock` (one row per `purchaseItemId`, upserted) and
+`GeneralInventoryTransaction` (structurally IDENTICAL to `rm_transactions` — a signed delta, a
+reason, `performedBy`, a timestamp; never a silent absolute overwrite). One function,
+`creditPurchaseItemStock(tx, { purchaseItemId, qty, reason, performedBy })`, branches internally on
+category and is the ONLY place either GRN call site (the no-QC-required path in `createGrn`, and
+the post-inspection path in `inspectGrnLineItem`) ever credits stock — see its own file header for
+why it was built and unit-tested (with the two downstream paths faked out) BEFORE either endpoint
+existed, per the Working Process this part's own prompt specified. `GeneralInventoryStock.stock` is
+deliberately NOT warehouse-partitioned — `warehouseId` on it is a last-touched hint only; no
+per-warehouse stock split was specified, and this function never attempts to infer one.
+
+**No-QC-required vs. QC-required — a stock-timing distinction, not a shortcut.** `qcRequired` on
+each GRN line item defaults from the linked `PurchaseItem.category` (always overridable per line in
+the request):
+
+```
+QC_REQUIRED_BY_CATEGORY = {
+  RawMaterial: true, Consumables: true, PackingMaterial: true, MaintenanceSpares: true,
+  Safety: true, ItElectronics: true,
+  StationeryOffice: false, Services: false,
+}
+```
+
+Physical goods that can genuinely arrive defective default `true`; categories with nothing
+physically inspectable (a rendered service, office stationery) default `false`. If `qcRequired =
+false`: `qcStatus = 'NotRequired'`, `acceptedQty = receivedQty` immediately, and
+`creditPurchaseItemStock` runs right there, inside the SAME transaction as the GRN write — nothing
+left to inspect, so nothing to wait for. If `qcRequired = true`: `qcStatus = 'Pending'`,
+`acceptedQty` stays `0`, and stock is **NOT** credited until `POST
+/:grnNo/line-items/:id/qc-inspect` runs — at which point exactly `passedQty` (never `receivedQty`,
+never `receivedQty` minus something) is what gets credited.
+
+**Excess-receipt approval: an inline confirmation flag, not a separate approval endpoint.** Every
+line item's `receivedQty` is checked against `(poLineItem.orderedQty - poLineItem.receivedQty)` —
+the real remaining-to-receive amount, correctly accounting for however many prior partial GRNs have
+already touched that line. A **short** receipt (less than remaining) is accepted freely, no flag
+needed. An **excess** receipt (pushes the cumulative total past `orderedQty`) is rejected outright
+UNLESS the request explicitly sets `excessApproved: true` on that line — a deliberate, distinct
+confirmation a caller must add on top of just typing a larger quantity, satisfying the spec's
+"configured approval/exception process" requirement without the complexity of a second,
+separate approval workflow/endpoint. `GrnLineItem.excessApproved` is then stored `true` on that
+line as the audit record of the decision.
+
+**PO status auto-update — driven by `receivedQty`, not `acceptedQty`, and a documented reading of a
+genuinely ambiguous spec sentence.** After every stock credit, `recomputePoReceiptStatus`
+(`purchaseOrders.service.ts`, called from `grn.service.ts` inside the same transaction) recomputes
+the parent PO's status off `PoLineItem.receivedQty` — a line that's physically arrived but still
+awaiting QC (or one QC later rejects outright) still counts as "received" for this purpose; QC
+outcome never reopens or delays the PO's receipt status. The spec's own wording —
+*"PartiallyReceived if some but not all line items' orderedQty is fully received"* — read literally
+describes counting how many INDIVIDUAL LINES are themselves fully received, which would leave a PO
+with real partial deliveries on several lines stuck in its pre-receipt status (since no single line
+would yet be "fully received"). This implementation instead reads `PartiallyReceived` as "at least
+one line has received SOME quantity, but not every line is fully received yet", and `FullyReceived`
+as "every line's `receivedQty >= orderedQty`" (`>=`, not `===`, specifically so an approved-excess
+receipt still correctly triggers `FullyReceived` rather than failing a strict-equality check). Every
+auto-transition writes the SAME `fieldChanged: 'status'` `PoAmendmentHistory` row every other status
+change does (see Part 3's "no separate `PoStatusHistory` table" design) — this is what keeps a
+later `OnHold`'s resume-target lookup correct even when the status being resumed to was reached
+automatically via a GRN, not via `PATCH /:poNumber/status`.
+
+**Incoming QC result derivation — `GrnLineQcStatus` has no partial-pass value, unlike
+`QcInspectionStatus`'s own `PartialPass`.** `deriveGrnQcStatus(passedQty, holdQty, rejectedQty)`
+(`grn.service.ts`) picks one of `Pass`/`Hold`/`Fail` by explicit precedence: `holdQty > 0` → `Hold`
+(anything held means the line isn't resolved yet, regardless of how the rest split); else
+`passedQty > 0` → `Pass` (some usable stock came out of this inspection — the exact split is still
+fully captured in `acceptedQty`/`rejectedQty` on the line even though the status itself just reads
+"Pass"); else → `Fail` (nothing passed, nothing held — fully rejected, or the degenerate all-zero
+case). `passedQty + holdQty + rejectedQty` is validated against the line's own `receivedQty` with
+the same `QUANTITY_SUM_TOLERANCE` (imported, reused) Client Flow Part 3's own QC inspection already
+established for the identical floating-point-slop reason. `inspectorName` is server-derived from
+`req.user.name` — same actor-attribution convention as `submittedBy`/`requestedBy`/`changedBy`
+everywhere else in this codebase — deliberately NOT accepted as free text in the request body.
+
+**Permissions — incoming QC stays StoreManager territory, unlike the production QC module.** One
+new entry, `grn` (`read: STORE_AND_PRODUCTION, write: STORE_ONLY`), covering BOTH GRN creation and
+QC inspection. This was a genuine judgment call: the production QC module
+(`qcInspections: { write: PRODUCTION_ONLY }`) puts QC in `ProductionManager`'s hands because it's
+inspecting THIS factory's own floor output. Incoming/goods-in QC is a different physical
+location and team — receiving and warehouse territory, the same domain as the rest of this
+Purchase Module (`purchaseIndents.approve`/`rfq`/`purchaseOrders`) — so it was kept
+Admin/StoreManager-only rather than mirrored to `ProductionManager`.
+
 ## Assumptions
 
 - Client-supplied primary keys (`modelId`, `lineId`, `teamId`, `orderId`, `partId`, and (FG Module

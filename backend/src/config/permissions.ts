@@ -112,4 +112,12 @@ export const PERMISSIONS = {
   // the same procurement-decision territory as purchaseIndents.approve/rfq;
   // all roles read. See README "Purchase Module Part 3".
   purchaseOrders: { read: STORE_AND_PRODUCTION, write: STORE_ONLY },
+  // Purchase Module Part 4 — GRN creation AND incoming QC inspection are
+  // both StoreManager territory (goods-in/warehouse receiving), same
+  // procurement-decision split as the rest of this module — deliberately
+  // NOT opened to ProductionManager the way the production-floor QC module
+  // (qcInspections above) is: incoming material QC happens at goods-in, a
+  // different team/location than the production line. See README "Purchase
+  // Module Part 4".
+  grn: { read: STORE_AND_PRODUCTION, write: STORE_ONLY },
 } as const;

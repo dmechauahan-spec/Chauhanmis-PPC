@@ -12,6 +12,11 @@ const poInclude = {
   supplier: true,
   lineItems: true,
   amendmentHistory: { orderBy: { changedAt: 'asc' } },
+  // Purchase Module Part 4 — the promised extension point (see
+  // PurchaseOrder's own schema comment): every GRN raised against this PO,
+  // each with its own line items so receipt/QC progress is visible without
+  // a second request to GET /api/grn/:grnNo.
+  grns: { orderBy: { receivedDate: 'asc' }, include: { lineItems: true } },
 } satisfies Prisma.PurchaseOrderInclude;
 
 type PoWithFull = Prisma.PurchaseOrderGetPayload<{ include: typeof poInclude }>;
@@ -225,7 +230,9 @@ async function insertPurchaseOrder(
   );
 }
 
-async function getWarehouseOrThrow(warehouseId: string): Promise<void> {
+// Exported for reuse by Purchase Module Part 4's grn.service.ts — a GRN's
+// own optional warehouseId is validated the identical soft-reference way.
+export async function getWarehouseOrThrow(warehouseId: string): Promise<void> {
   const warehouse = await prisma.warehouse.findUnique({ where: { warehouseId } });
   if (!warehouse) {
     throw new ValidationError('Invalid deliveryWarehouseId', { deliveryWarehouseId: `Warehouse '${warehouseId}' does not exist` });
@@ -737,4 +744,77 @@ export async function amendPurchaseOrder(poNumber: string, input: AmendPurchaseO
   });
 
   return withOverdue(updated);
+}
+
+// ----------------------------------------------------------------------------
+// Purchase Module Part 4 — GRN-driven receipt status. Called by
+// grn.service.ts (never by anything client-facing in THIS module — see
+// SYSTEM_DRIVEN_STATUSES above) inside the SAME transaction as the GRN/QC
+// write that changed a line's receivedQty, so the status and the receipt
+// that justifies it are one atomic fact.
+// ----------------------------------------------------------------------------
+
+// Absorbs harmless floating-point/rounding slop at the Decimal(12,2)
+// boundary — same role QUANTITY_SUM_TOLERANCE plays in qcInspection.schema.ts,
+// not a "some under/over-counting is fine" allowance.
+const RECEIPT_QTY_TOLERANCE = 0.01;
+
+// Driven by `receivedQty` (physical receipt), deliberately NOT `acceptedQty`
+// — a line that's been physically received but is still awaiting QC (or
+// even one that QC later rejects outright) has still been "received" for
+// the purpose of this status; QC outcome doesn't reopen or delay it. See
+// README "Purchase Module Part 4".
+//
+// **Judgment call on the spec's exact wording** ("PartiallyReceived if some
+// but not all line items' orderedQty is fully received"), documented here
+// because it's genuinely ambiguous: read literally, that sentence describes
+// counting how many INDIVIDUAL LINES are themselves fully received. Taken
+// literally, a PO with two lines where line A is 3-of-10 received and line
+// B is untouched would stay in its PRE-receipt status (neither line is
+// "fully received", so neither the PartiallyReceived nor FullyReceived
+// condition as literally written would fire) — which doesn't match what
+// "Partially Received" should mean for the PO as a whole once real material
+// has genuinely arrived. This implementation instead treats
+// PartiallyReceived as "at least one line has received SOME quantity, but
+// not every line is fully received yet", and FullyReceived as "every line's
+// receivedQty >= orderedQty" (>= specifically so an approved-excess receipt,
+// which can push receivedQty past orderedQty, still counts as fully
+// received rather than failing a strict equality check).
+export async function recomputePoReceiptStatus(tx: PrismaTransactionClient, poId: bigint, changedBy: string): Promise<void> {
+  const po = await tx.purchaseOrder.findUniqueOrThrow({ where: { id: poId }, include: { lineItems: true } });
+
+  // Defensive no-op guard: GRN creation already restricts itself to POs in
+  // SentToSupplier/SupplierConfirmed/PartiallyReceived (see
+  // RECEIVABLE_PO_STATUSES in grn.service.ts), so this should never actually
+  // fire for e.g. an OnHold or Cancelled PO — but this function doesn't
+  // assume the caller always re-checked that immediately before calling it.
+  const RECEIVABLE_STATUSES: ReadonlySet<PoStatus> = new Set([PoStatus.SentToSupplier, PoStatus.SupplierConfirmed, PoStatus.PartiallyReceived]);
+  if (!RECEIVABLE_STATUSES.has(po.status)) {
+    return;
+  }
+
+  const allFullyReceived = po.lineItems.every((li) => Number(li.receivedQty) >= Number(li.orderedQty) - RECEIPT_QTY_TOLERANCE);
+  const anyReceived = po.lineItems.some((li) => Number(li.receivedQty) > RECEIPT_QTY_TOLERANCE);
+
+  const newStatus = allFullyReceived ? PoStatus.FullyReceived : anyReceived ? PoStatus.PartiallyReceived : null;
+  if (!newStatus || newStatus === po.status) {
+    return;
+  }
+
+  await tx.purchaseOrder.update({ where: { id: poId }, data: { status: newStatus } });
+  // Same fieldChanged: 'status' log every OTHER status transition writes
+  // (see PoAmendmentHistory's schema comment) — this is what keeps a
+  // subsequent OnHold's resume-target lookup correct even when the status
+  // it needs to resume back to was reached automatically, not via PATCH
+  // /:poNumber/status.
+  await tx.poAmendmentHistory.create({
+    data: {
+      poId,
+      fieldChanged: 'status',
+      oldValue: po.status,
+      newValue: newStatus,
+      changedBy,
+      reason: 'Auto-updated from GRN receipt quantities (Purchase Module Part 4)',
+    },
+  });
 }

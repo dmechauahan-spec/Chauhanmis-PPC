@@ -67,6 +67,7 @@ tags:
   - name: Purchase Indents
   - name: RFQs
   - name: Purchase Orders
+  - name: GRN
 
 components:
   securitySchemes:
@@ -1456,6 +1457,11 @@ components:
           readOnly: true
           description: Detail endpoint only — every amendment AND status transition, oldest first.
           items: { $ref: '#/components/schemas/PoAmendmentHistory' }
+        grns:
+          type: array
+          readOnly: true
+          description: 'Detail endpoint only. Purchase Module Part 4 — every GRN raised against this PO, oldest first.'
+          items: { $ref: '#/components/schemas/GoodsReceiptNote' }
         warnings:
           type: array
           readOnly: true
@@ -1514,6 +1520,72 @@ components:
         existingQty: { type: number }
         existingPoStatus: { type: string }
         message: { type: string }
+
+    GoodsReceiptNote:
+      type: object
+      description: >
+        Purchase Module Part 4. One receipt event against a PO — a PO can have several over time
+        (partial deliveries). See README "Purchase Module Part 4".
+      properties:
+        id: { type: integer, readOnly: true }
+        grnNo: { type: string, readOnly: true, example: GRN-20260820-01, description: Generated via the shared sequential-id scheme. }
+        poId: { type: integer, readOnly: true }
+        receivedDate: { type: string, format: date, readOnly: true }
+        receivedBy: { type: string, readOnly: true, description: 'The authenticated caller''s name — never client-supplied.' }
+        warehouseId: { type: string, nullable: true, description: 'Soft reference, validated against Warehouse.warehouseId if given.' }
+        notes: { type: string, nullable: true }
+        lineItems:
+          type: array
+          readOnly: true
+          items: { $ref: '#/components/schemas/GrnLineItem' }
+        po:
+          $ref: '#/components/schemas/PurchaseOrder'
+          description: Detail endpoint only.
+
+    GrnLineItem:
+      type: object
+      description: >
+        Purchase Module Part 4. qcRequired defaults from the linked PurchaseItem's category
+        (overridable per line). excessApproved is true only when this GRN's receivedQty pushed the
+        PO line's cumulative received total past its orderedQty AND the caller explicitly confirmed
+        that inline. See README "Purchase Module Part 4".
+      properties:
+        id: { type: integer, readOnly: true }
+        grnId: { type: integer, readOnly: true }
+        poLineItemId: { type: integer }
+        receivedQty: { type: number }
+        qcRequired: { type: boolean, default: true }
+        qcStatus:
+          type: string
+          enum: [Pending, NotRequired, Pass, Hold, Fail]
+          readOnly: true
+        acceptedQty: { type: number, readOnly: true, default: 0 }
+        rejectedQty: { type: number, readOnly: true, default: 0 }
+        excessApproved: { type: boolean, readOnly: true, default: false }
+        qcInspection:
+          $ref: '#/components/schemas/GrnQcInspection'
+          nullable: true
+          description: Null until POST .../qc-inspect runs (or never, if qcRequired is false).
+        poLineItem:
+          $ref: '#/components/schemas/PoLineItem'
+          description: Detail endpoint only.
+
+    GrnQcInspection:
+      type: object
+      description: >
+        Purchase Module Part 4. Incoming-material QC — a completely different concept from
+        DailyQcInspection (production output). See README "Three QC-flavored things in this
+        codebase". At most one per GrnLineItem, created only by POST
+        /grn/{grnNo}/line-items/{id}/qc-inspect against a line whose qcStatus is still Pending.
+      properties:
+        id: { type: integer, readOnly: true }
+        grnLineItemId: { type: integer, readOnly: true }
+        passedQty: { type: number }
+        holdQty: { type: number, default: 0 }
+        rejectedQty: { type: number, default: 0 }
+        inspectorName: { type: string, readOnly: true, description: 'The authenticated caller''s name — never client-supplied.' }
+        remarks: { type: string, nullable: true }
+        inspectedAt: { type: string, format: date-time, readOnly: true }
 
     FgBatch:
       type: object
@@ -5110,3 +5182,131 @@ paths:
         '400': { description: 'Invalid transition, missing cancellationReason, or a direct PartiallyReceived/FullyReceived attempt' }
         '403': { description: Caller is neither Admin nor StoreManager }
         '404': { description: Unknown poNumber }
+
+  /grn:
+    get:
+      tags: [GRN]
+      summary: List GRNs
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/pageSize'
+        - name: poId
+          in: query
+          schema: { type: integer }
+        - name: qcStatus
+          in: query
+          schema:
+            type: string
+            enum: [Pending, NotRequired, Pass, Hold, Fail]
+          description: Matches a GRN having AT LEAST ONE line item in this status, not every line item.
+        - name: dateFrom
+          in: query
+          schema: { type: string, format: date }
+          description: Filters against receivedDate.
+        - name: dateTo
+          in: query
+          schema: { type: string, format: date }
+          description: Filters against receivedDate.
+      responses:
+        '200': { description: Paginated list of GRNs }
+    post:
+      tags: [GRN]
+      summary: Records a goods receipt against a PO
+      description: >
+        Admin/StoreManager only. The PO must be in status SentToSupplier, SupplierConfirmed, or
+        PartiallyReceived. Each line's receivedQty is checked against (orderedQty - the line's
+        already-received total) — a short receipt is accepted freely; an excess receipt is
+        rejected unless that line sets excessApproved: true. qcRequired defaults from the linked
+        PurchaseItem's category (overridable per line): if false, the line is accepted and credited
+        to stock immediately in this same request; if true, it stays Pending until QC inspection
+        runs. See README "Purchase Module Part 4".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [poId, lineItems]
+              properties:
+                poId: { type: integer }
+                warehouseId: { type: string }
+                notes: { type: string }
+                lineItems:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [poLineItemId, receivedQty]
+                    properties:
+                      poLineItemId: { type: integer }
+                      receivedQty: { type: number }
+                      qcRequired: { type: boolean }
+                      excessApproved: { type: boolean, default: false }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GoodsReceiptNote' }
+        '400': { description: 'Validation error, PO not in a receivable status, duplicate poLineItemId in the request, or an unapproved excess receipt' }
+        '403': { description: Caller is neither Admin nor StoreManager }
+        '404': { description: 'Unknown poId, or a poLineItemId not belonging to the given PO' }
+
+  /grn/{grnNo}:
+    parameters:
+      - name: grnNo
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [GRN]
+      responses:
+        '200':
+          description: Full GoodsReceiptNote with lineItems (each with its qcInspection/poLineItem) and the linked PO
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GoodsReceiptNote' }
+        '404': { description: Not found }
+
+  /grn/{grnNo}/line-items/{id}/qc-inspect:
+    parameters:
+      - name: grnNo
+        in: path
+        required: true
+        schema: { type: string }
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [GRN]
+      summary: Records the incoming-QC result for one GRN line item
+      description: >
+        Admin/StoreManager only. Only valid against a line whose qcStatus is still Pending.
+        passedQty + holdQty + rejectedQty must not exceed the line's receivedQty. qcStatus is
+        derived: holdQty > 0 -> Hold; else passedQty > 0 -> Pass; else Fail. Exactly passedQty is
+        credited to stock (via creditPurchaseItemStock — RM reuses rm_inventory/adjustStock, every
+        other category credits the new general_inventory_stock ledger). inspectorName is
+        server-derived from the caller's identity. See README "Purchase Module Part 4".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [passedQty]
+              properties:
+                passedQty: { type: number }
+                holdQty: { type: number, default: 0 }
+                rejectedQty: { type: number, default: 0 }
+                remarks: { type: string }
+      responses:
+        '200':
+          description: Updated GrnLineItem, including the created qcInspection
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GrnLineItem' }
+        '400': { description: 'Validation error, or passedQty + holdQty + rejectedQty exceeds receivedQty' }
+        '403': { description: Caller is neither Admin nor StoreManager }
+        '404': { description: 'Unknown grnNo, or line item id not on this GRN' }
+        '409': { description: This line is not pending QC (not required, or already inspected) }
