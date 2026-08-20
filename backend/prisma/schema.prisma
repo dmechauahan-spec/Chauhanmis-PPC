@@ -1118,10 +1118,16 @@ model PurchaseItem {
   maxStock      Decimal?         @map("max_stock") @db.Decimal(12, 2)
   isActive      Boolean          @default(true) @map("is_active")
 
-  rmInventory     RmInventory?     @relation(fields: [rmPartId], references: [partId])
-  purchaseIndents PurchaseIndent[]
+  rmInventory                  RmInventory?                  @relation(fields: [rmPartId], references: [partId])
+  purchaseIndents              PurchaseIndent[]
   // Purchase Module Part 3 — see README "Purchase Module Part 3".
-  poLineItems     PoLineItem[]
+  poLineItems                  PoLineItem[]
+  // Purchase Module Part 4 — see README "Purchase Module Part 4". Null/empty
+  // for a RawMaterial item (that category keeps using rmInventory above,
+  // never this ledger) and for any non-RawMaterial item that has never yet
+  // been received via a GRN.
+  generalInventoryStock        GeneralInventoryStock?
+  generalInventoryTransactions GeneralInventoryTransaction[]
 
   @@index([category])
   @@map("purchase_items")
@@ -1367,6 +1373,9 @@ model PurchaseOrder {
   rfq              Rfq?                 @relation(fields: [rfqId], references: [id])
   lineItems        PoLineItem[]
   amendmentHistory PoAmendmentHistory[]
+  // Purchase Module Part 4 — the promised extension point (see this model's
+  // own comment above): every GRN ever raised against this PO.
+  grns             GoodsReceiptNote[]
 
   @@index([supplierId])
   @@index([status])
@@ -1400,6 +1409,10 @@ model PoLineItem {
 
   po           PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade)
   purchaseItem PurchaseItem  @relation(fields: [purchaseItemId], references: [id])
+  // Purchase Module Part 4 — every GRN line item that has drawn against this
+  // PO line, over however many partial GRNs. receivedQty/acceptedQty/
+  // rejectedQty above are the running SUM across all of them.
+  grnLineItems GrnLineItem[]
 
   @@index([poId])
   @@index([purchaseItemId])
@@ -1431,4 +1444,131 @@ model PoAmendmentHistory {
   @@index([poId])
   @@index([poId, fieldChanged, newValue])
   @@map("po_amendment_history")
+}
+
+// ============================================================================
+// PURCHASE MODULE — PART 4: GRN + QC + INVENTORY (see README "Purchase
+// Module Part 4"). A PO's goods arrive here — recorded as a GoodsReceiptNote
+// against it (possibly several, over time, as partial deliveries), each
+// line optionally routed through incoming QC before it becomes usable
+// stock. See README "Three QC-flavored things in this codebase" for how
+// this incoming-material QC (GrnQcInspection) is a DELIBERATELY different
+// concept from Client Flow Part 3's DailyQcInspection (production output)
+// and Module 13's QcBatch (traceability) — do not conflate any of them.
+// ============================================================================
+
+enum GrnLineQcStatus {
+  Pending
+  NotRequired
+  Pass
+  Hold
+  Fail
+}
+
+// One receipt event against a PO — a PO can have several over time (partial
+// deliveries). `warehouseId` is a soft, service-validated reference, same
+// convention as PurchaseOrder.deliveryWarehouseId (see that field's own
+// history and grn.service.ts's reuse of purchaseOrders.service.ts's
+// getWarehouseOrThrow).
+model GoodsReceiptNote {
+  id           BigInt   @id @default(autoincrement())
+  grnNo        String   @unique @map("grn_no")
+  poId         BigInt   @map("po_id")
+  receivedDate DateTime @default(now()) @map("received_date") @db.Date
+  receivedBy   String   @map("received_by")
+  warehouseId  String?  @map("warehouse_id")
+  notes        String?
+
+  po        PurchaseOrder @relation(fields: [poId], references: [id])
+  lineItems GrnLineItem[]
+
+  @@index([poId])
+  @@index([receivedDate])
+  @@map("goods_receipt_notes")
+}
+
+// One PO line item's contribution to one GRN. `qcRequired` defaults from the
+// linked PurchaseItem's category (see QC_REQUIRED_BY_CATEGORY in
+// grn.service.ts) but is always overridable per line in the create request.
+// `excessApproved` is true only when this GRN's `receivedQty` pushed the PO
+// line's cumulative received total past its `orderedQty` AND the caller
+// explicitly confirmed that excess inline (`excessApproved: true` in the
+// request) — see README "Purchase Module Part 4" for why an inline
+// confirmation flag, not a separate approval endpoint, was chosen.
+model GrnLineItem {
+  id             BigInt          @id @default(autoincrement())
+  grnId          BigInt          @map("grn_id")
+  poLineItemId   BigInt          @map("po_line_item_id")
+  receivedQty    Decimal         @map("received_qty") @db.Decimal(12, 2)
+  qcRequired     Boolean         @default(true) @map("qc_required")
+  qcStatus       GrnLineQcStatus @default(Pending) @map("qc_status")
+  acceptedQty    Decimal         @default(0) @map("accepted_qty") @db.Decimal(12, 2)
+  rejectedQty    Decimal         @default(0) @map("rejected_qty") @db.Decimal(12, 2)
+  excessApproved Boolean         @default(false) @map("excess_approved")
+
+  grn          GoodsReceiptNote @relation(fields: [grnId], references: [id], onDelete: Cascade)
+  poLineItem   PoLineItem       @relation(fields: [poLineItemId], references: [id])
+  qcInspection GrnQcInspection?
+
+  @@index([grnId])
+  @@index([poLineItemId])
+  @@index([qcStatus])
+  @@map("grn_line_items")
+}
+
+// One incoming-QC result per GrnLineItem (`@unique` — at most one ever, same
+// 1:1-via-unique-FK convention as FgBatch.qcInspectionId). Only ever created
+// by POST /api/grn/:grnNo/line-items/:id/qc-inspect, against a line whose
+// qcStatus is still Pending — see grn.service.ts.
+model GrnQcInspection {
+  id            BigInt   @id @default(autoincrement())
+  grnLineItemId BigInt   @unique @map("grn_line_item_id")
+  passedQty     Decimal  @map("passed_qty") @db.Decimal(12, 2)
+  holdQty       Decimal  @default(0) @map("hold_qty") @db.Decimal(12, 2)
+  rejectedQty   Decimal  @default(0) @map("rejected_qty") @db.Decimal(12, 2)
+  inspectorName String   @map("inspector_name")
+  remarks       String?
+  inspectedAt   DateTime @default(now()) @map("inspected_at")
+
+  grnLineItem GrnLineItem @relation(fields: [grnLineItemId], references: [id], onDelete: Cascade)
+
+  @@map("grn_qc_inspections")
+}
+
+// Stock ledger for every NON-RawMaterial PurchaseItem category — RawMaterial
+// keeps using the ALREADY-EXISTING rm_inventory/rm_transactions system
+// directly (via Module 1's own `adjustStock`, reused not duplicated). See
+// README "Purchase Module Part 4" — this is the single most important
+// design decision in this part. One row per purchaseItemId (`@unique`); NOT
+// warehouse-partitioned — `warehouseId` is a last-touched-warehouse hint
+// only, deliberately never used to split stock into per-warehouse rows (no
+// such requirement was specified, and doing so opportunistically per GRN
+// would misrepresent an item received into more than one warehouse). See
+// creditPurchaseItemStock in grn/inventoryCrediting.service.ts.
+model GeneralInventoryStock {
+  id             BigInt  @id @default(autoincrement())
+  purchaseItemId BigInt  @unique @map("purchase_item_id")
+  warehouseId    String? @map("warehouse_id")
+  stock          Decimal @default(0) @db.Decimal(12, 2)
+
+  purchaseItem PurchaseItem @relation(fields: [purchaseItemId], references: [id])
+
+  @@map("general_inventory_stock")
+}
+
+// Structurally mirrors rm_transactions exactly — same shape, same principle
+// (every stock change is a logged, signed delta, never a silent absolute
+// overwrite). See README "Purchase Module Part 4".
+model GeneralInventoryTransaction {
+  id             BigInt   @id @default(autoincrement())
+  purchaseItemId BigInt   @map("purchase_item_id")
+  delta          Decimal  @db.Decimal(12, 2)
+  reason         String
+  performedBy    String   @map("performed_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  purchaseItem PurchaseItem @relation(fields: [purchaseItemId], references: [id])
+
+  @@index([purchaseItemId])
+  @@map("general_inventory_transactions")
 }
